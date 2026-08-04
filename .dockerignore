@@ -1,0 +1,16 @@
+.env
+.git
+.gitignore
+vendor
+node_modules
+public/stisla/node_modules
+storage/app
+storage/logs
+storage/framework
+_debugbar
+_archive
+_database
+_tar
+tests/logs
+.editorconfig
+.github
