@@ -1,0 +1,85 @@
+<?php
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\ApiController;
+use App\Http\Controllers\admin\C_transaksi;
+
+/*
+|--------------------------------------------------------------------------
+| API Routes
+|--------------------------------------------------------------------------
+*/
+
+// Public routes
+Route::post('/login', [ApiController::class, 'login']);
+Route::post('/transaksi/pembayaran/hendle-payment', [C_transaksi::class, 'payment_hendler']);
+
+// Public data (no auth required)
+Route::get('/info/pesantren', [ApiController::class, 'infoPesantren']);
+Route::get('/info/mzt', [ApiController::class, 'infoMzt']);
+Route::get('/public/events', [ApiController::class, 'eventsIndex']);
+Route::get('/public/events/{id}', [ApiController::class, 'eventsShow']);
+Route::get('/public/news', [ApiController::class, 'newsIndex']);
+Route::get('/public/news/{id}', [ApiController::class, 'newsShow']);
+Route::get('/public/carousel', [ApiController::class, 'carouselIndex']);
+Route::get('/public/stats', [ApiController::class, 'publicStats']);
+Route::post('/public/contact', [ApiController::class, 'contactStore']);
+
+// Protected routes (require Sanctum token)
+Route::middleware('auth:sanctum')->group(function () {
+
+    // Auth
+    Route::get('/user', [ApiController::class, 'user']);
+    Route::post('/logout', [ApiController::class, 'logout']);
+
+    // Dashboard
+    Route::get('/dashboard/stats', [ApiController::class, 'dashboardStats']);
+    Route::get('/dashboard/calendar', [ApiController::class, 'dashboardCalendar']);
+    Route::get('/dashboard/events', [ApiController::class, 'dashboardEvents']);
+
+    // Members
+    Route::get('/members', [ApiController::class, 'membersIndex']);
+    Route::get('/members/{id}', [ApiController::class, 'membersShow']);
+    Route::post('/members', [ApiController::class, 'membersStore']);
+    Route::post('/members/{id}', [ApiController::class, 'membersUpdate']);
+    Route::delete('/members/{id}', [ApiController::class, 'membersDestroy']);
+
+    // Events
+    Route::get('/events', [ApiController::class, 'eventsIndex']);
+    Route::get('/events/{id}', [ApiController::class, 'eventsShow']);
+    Route::post('/events', [ApiController::class, 'eventsStore']);
+    Route::post('/events/{id}', [ApiController::class, 'eventsUpdate']);
+    Route::delete('/events/{id}', [ApiController::class, 'eventsDestroy']);
+    Route::get('/events/{id}/tanggal', [ApiController::class, 'eventTanggal']);
+
+    // News
+    Route::get('/news', [ApiController::class, 'newsIndex']);
+    Route::get('/news/{id}', [ApiController::class, 'newsShow']);
+    Route::post('/news', [ApiController::class, 'newsStore']);
+    Route::post('/news/{id}', [ApiController::class, 'newsUpdate']);
+    Route::delete('/news/{id}', [ApiController::class, 'newsDestroy']);
+
+    // Attendance
+    Route::get('/attendance/{eventId}/{tanggalId}', [ApiController::class, 'attendanceIndex']);
+    Route::post('/attendance', [ApiController::class, 'attendanceStore']);
+
+    // Transactions
+    Route::get('/transactions/{eventId}', [ApiController::class, 'transactionsIndex']);
+
+    // Content
+    Route::get('/carousel', [ApiController::class, 'carouselIndex']);
+    Route::post('/carousel/{id}', [ApiController::class, 'carouselUpdate']);
+    Route::post('/info/pesantren', [ApiController::class, 'infoPesantrenUpdate']);
+    Route::post('/info/mzt', [ApiController::class, 'infoMztUpdate']);
+
+    // Activity Log
+        Route::get('/activity-log', [ApiController::class, 'activityLogIndex']);
+    Route::get('/activity-log/{userId}', [ApiController::class, 'activityLogUser']);
+
+    // Profile
+    Route::post('/profile', [ApiController::class, 'profileUpdate']);
+});
+
+// KTA Card (public HTML view)
+Route::get('/kta/{id}', [ApiController::class, 'ktaView']);
