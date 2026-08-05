@@ -7,6 +7,9 @@ cd /app
 mkdir -p storage/logs bootstrap/cache
 chown -R www-data:www-data storage bootstrap/cache 2>/dev/null || true
 chown -R www-data:www-data /app/storage/app 2>/dev/null || true
+# Make the bind-mounted public media readable by the nginx worker (runs as the
+# nginx user) regardless of how files landed on the host.
+chmod -R a+rX /app/storage/app/public 2>/dev/null || true
 
 # Point public/storage at storage/app/public (idempotent).
 [ -L public/storage ] || php artisan storage:link
