@@ -47,6 +47,11 @@ RUN composer dump-autoload --no-dev --optimize --classmap-authoritative \
 # Nginx + php-fpm runtime configuration.
 COPY docker/nginx/backend.conf /etc/nginx/http.d/default.conf
 COPY docker/php/php-fpm.conf /usr/local/etc/php-fpm.d/zz-mzt.conf
+# Drop the image's stock pool files so zz-mzt.conf is the only [www] pool.
+RUN rm -f /usr/local/etc/php-fpm.d/www.conf \
+        /usr/local/etc/php-fpm.d/www.conf.default \
+        /usr/local/etc/php-fpm.d/docker.conf \
+        /usr/local/etc/php-fpm.d/zz-docker.conf
 COPY docker/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh \
