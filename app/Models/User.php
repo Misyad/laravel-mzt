@@ -23,6 +23,9 @@ class User extends Authenticatable
         'password',
         'id_anggota',
         'is_active',
+        'last_login',
+        'password_changed_at',
+        'login_count',
     ];
 
     /**

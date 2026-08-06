@@ -231,10 +231,9 @@ class ApiController extends Controller
             ]);
         }
 
-        $user->update([
-            'password' => Hash::make($request->password),
-            'password_changed_at' => now(),
-        ]);
+        $user->password = Hash::make($request->password);
+        $user->password_changed_at = now();
+        $user->save();
 
         return response()->json([
             'success' => true,
