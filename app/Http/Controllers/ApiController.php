@@ -20,6 +20,9 @@ use App\Models\HakAksesRole;
 use App\Models\Tanggal_event;
 use App\Models\TemplateIdCard;
 use App\Models\Kontak;
+use App\Models\Order;
+use App\Services\RegistrationService;
+use App\Services\EventCapacityService;
 use Carbon\Carbon;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
@@ -751,6 +754,11 @@ class ApiController extends Controller
             'harga' => 'required|numeric',
             'deskripsi' => 'required|string',
             'tanggal' => 'required|string',
+            'kuota' => 'nullable|integer|min:0',
+            'venue' => 'nullable|string|max:255',
+            'visibility' => 'nullable|string|in:public,internal,private',
+            'registrasi_dibuka' => 'nullable|date',
+            'registrasi_ditutup' => 'nullable|date',
         ]);
 
         DB::beginTransaction();
@@ -777,6 +785,12 @@ class ApiController extends Controller
                 'tanggal_mulai' => $tanggal_mulai,
                 'tanggal_selesai' => $tanggal_selesai,
                 'is_active' => '1',
+                'kuota' => $request->kuota,
+                'venue' => $request->venue,
+                'visibility' => $request->visibility ?: 'public',
+                'registrasi_dibuka' => $request->registrasi_dibuka,
+                'registrasi_ditutup' => $request->registrasi_ditutup,
+                'harga_amount' => (float) $request->harga,
             ]);
 
             DB::commit();
@@ -800,6 +814,11 @@ class ApiController extends Controller
             'harga' => 'required|numeric',
             'deskripsi' => 'required|string',
             'tanggal' => 'required|string',
+            'kuota' => 'nullable|integer|min:0',
+            'venue' => 'nullable|string|max:255',
+            'visibility' => 'nullable|string|in:public,internal,private',
+            'registrasi_dibuka' => 'nullable|date',
+            'registrasi_ditutup' => 'nullable|date',
         ]);
 
         DB::beginTransaction();
@@ -830,6 +849,12 @@ class ApiController extends Controller
                 'tanggal' => $request->tanggal,
                 'tanggal_mulai' => $tanggal_mulai,
                 'tanggal_selesai' => $tanggal_selesai,
+                'kuota' => $request->kuota,
+                'venue' => $request->venue,
+                'visibility' => $request->visibility ?: $event->visibility,
+                'registrasi_dibuka' => $request->registrasi_dibuka,
+                'registrasi_ditutup' => $request->registrasi_ditutup,
+                'harga_amount' => (float) $request->harga,
             ]);
 
             DB::commit();
@@ -853,6 +878,66 @@ class ApiController extends Controller
 
         $event->update(['is_active' => '0']);
         return response()->json(['success' => true, 'message' => 'Event deleted successfully']);
+    }
+
+    /**
+     * PHASE 2A — REGISTRATION
+     * Create an order for the current alumni on the given event.
+     */
+    public function registerEvent(Request $request, RegistrationService $registration, $id)
+    {
+        $user = $request->user();
+        if (!$user->id_anggota) {
+            return response()->json(['success' => false, 'message' => 'Akun tanpa nomor anggota'], 422);
+        }
+
+        $result = $registration->register($user, (int) $id);
+        if (!$result['ok']) {
+            return response()->json(['success' => false, 'message' => $result['message']], $result['code']);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => $result['message'],
+            'data' => $result['order'],
+        ], $result['code']);
+    }
+
+    /**
+     * PHASE 2A — MY ORDERS
+     * List the authenticated user's orders.
+     */
+    public function myOrders(Request $request)
+    {
+        $user = $request->user();
+        $orders = Order::where('id_anggota', $user->id_anggota)
+            ->orderByDesc('created_at')
+            ->get();
+
+        return response()->json(['success' => true, 'data' => $orders]);
+    }
+
+    /**
+     * PHASE 2A — ORDER DETAIL BY UUID
+     * Only the owner (or a staff with the right role) may view an order.
+     */
+    public function orderShow(Request $request, $uuid)
+    {
+        $order = Order::where('uuid', $uuid)->first();
+        if (!$order) {
+            return response()->json(['success' => false, 'message' => 'Order not found'], 404);
+        }
+
+        $user = $request->user();
+        $roles = HakAksesRole::where('id_users', $user->id)->pluck('nama_role')->toArray();
+        $isOwner = $user->id_anggota === $order->id_anggota;
+        $isStaff = in_array('admin', $roles, true);
+
+        if (!$isOwner && !$isStaff) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
+        return response()->json(['success' => true, 'data' => $order]);
     }
 
     /**

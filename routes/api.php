@@ -68,6 +68,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('/events/{id}', [ApiController::class, 'eventsDestroy']);
     Route::get('/events/{id}/tanggal', [ApiController::class, 'eventTanggal']);
 
+    // Phase 2A — Registration & Orders
+    Route::post('/events/{id}/register', [ApiController::class, 'registerEvent']);
+    Route::get('/my-orders', [ApiController::class, 'myOrders']);
+    Route::get('/orders/{uuid}', [ApiController::class, 'orderShow']);
+
     // News
     Route::get('/news', [ApiController::class, 'newsIndex']);
     Route::get('/news/{id}', [ApiController::class, 'newsShow']);
