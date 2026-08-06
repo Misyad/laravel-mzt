@@ -278,7 +278,7 @@ class ApiController extends Controller
         if (User::where('id', $id)->exists()) {
             return response()->json([
                 'success' => false,
-                'message' => 'Anggota sudah memiliki akun.',
+                'message' => 'Akun sudah tersedia. Gunakan Reset Password apabila anggota lupa password.',
             ], 409);
         }
 
@@ -512,6 +512,12 @@ class ApiController extends Controller
                 'tahun_keluar' => $m->tahun_keluar,
                 'tempat_lahir' => $m->tempat_lahir ?? '',
                 'tanggal_lahir' => $m->tanggal_lahir,
+                // Phase 1 UX: expose existing users columns to let the member
+                // grid surface account status. Additive only — no schema change.
+                'has_account' => $m->user ? true : false,
+                'account_is_active' => $m->user ? (int) $m->user->is_active : 0,
+                'login_count' => $m->user ? (int) $m->user->login_count : 0,
+                'last_login' => $m->user ? $m->user->last_login : null,
             ];
         });
         return response()->json([
