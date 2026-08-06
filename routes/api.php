@@ -29,9 +29,24 @@ Route::post('/public/contact', [ApiController::class, 'contactStore']);
 // Protected routes (require Sanctum token)
 Route::middleware('auth:sanctum')->group(function () {
 
-    // Auth
+// Auth
     Route::get('/user', [ApiController::class, 'user']);
     Route::post('/logout', [ApiController::class, 'logout']);
+
+    // Phase 1 — Alumni digital identity
+    Route::get('/me', [ApiController::class, 'me']);
+    Route::get('/profile', [ApiController::class, 'profileGet']);
+    Route::put('/profile', [ApiController::class, 'profileUpdateJson']);
+    Route::put('/password', [ApiController::class, 'changePassword']);
+    Route::get('/id-card', [ApiController::class, 'idCard']);
+
+    // Account management
+    // NOTE: the literal /members/bulk-account MUST be declared before
+    // /members/{id} so it is not captured by the parameter route.
+    Route::post('/members/bulk-account', [ApiController::class, 'bulkGenerate']);
+    Route::post('/members/{id}/account', [ApiController::class, 'generateAccount']);
+    Route::put('/members/{id}/account', [ApiController::class, 'resetAccount']);
+    Route::put('/members/{id}/account/status', [ApiController::class, 'setAccountStatus']);
 
     // Dashboard
     Route::get('/dashboard/stats', [ApiController::class, 'dashboardStats']);

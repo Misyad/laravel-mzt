@@ -42,5 +42,8 @@ class User extends Authenticatable
      */
     protected $casts = [
         'email_verified_at' => 'datetime',
+        'last_login' => 'datetime',
+        'password_changed_at' => 'datetime',
+        'login_count' => 'integer',
     ];
 }

@@ -21,6 +21,7 @@ use App\Models\Tanggal_event;
 use App\Models\TemplateIdCard;
 use App\Models\Kontak;
 use Carbon\Carbon;
+use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
 
 class ApiController extends Controller
@@ -49,6 +50,10 @@ class ApiController extends Controller
             ]);
         }
 
+        // Audit login (only on successful authentication).
+        $user->last_login = now();
+        $user->increment('login_count');
+
         // Create token
         $token = $user->createToken('api-token')->plainTextToken;
 
@@ -68,6 +73,7 @@ class ApiController extends Controller
                 'email' => $user->email,
                 'roles' => $roles,
                 'foto' => $userData ? $userData->foto : null,
+                'must_change_password' => empty($user->password_changed_at),
             ],
         ]);
     }
@@ -94,7 +100,314 @@ class ApiController extends Controller
                 'roles' => $roles,
                 'foto' => $userData ? $userData->foto : null,
                 'data' => $userData,
+                'must_change_password' => empty($user->password_changed_at),
             ],
+        ]);
+    }
+
+    /**
+     * ME ENDPOINT (Phase 1): primary identity endpoint for the frontend.
+     */
+    public function me(Request $request)
+    {
+        $user = $request->user();
+        $roles = HakAksesRole::where('id_users', $user->id)->pluck('nama_role')->toArray();
+        $userData = DataUser::where('id_users', $user->id)->first();
+
+        return response()->json([
+            'success' => true,
+            'user' => [
+                'id' => $user->id,
+                'id_anggota' => $user->id_anggota,
+                'name' => $user->name,
+                'email' => $user->email,
+                'roles' => $roles,
+                'foto' => $userData ? $userData->foto : null,
+                'must_change_password' => empty($user->password_changed_at),
+            ],
+        ]);
+    }
+
+    /**
+     * PHASE 1 — PROFILE READ
+     * Read-only: nama, id_anggota (NIAM / Nomor Anggota), tahun_masuk,
+     * tahun_keluar, status, barcode. Editable: foto, no_hp, email, alamat,
+     * pekerjaan, tempat_lahir.
+     */
+    public function profileGet(Request $request)
+    {
+        $user = $request->user();
+        $data = DataUser::where('id_users', $user->id)->first();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'id_anggota' => $user->id_anggota,
+                'email' => $user->email,
+                'no_hp' => $data ? $data->no_hp : null,
+                'alamat' => $data ? $data->alamat : null,
+                'pekerjaan' => $data ? $data->pekerjaan : null,
+                'tempat_lahir' => $data ? $data->tempat_lahir : null,
+                'niqobah' => $data ? $data->niqobah : null,
+                'tahun_masuk' => $data ? $data->tahun_masuk : null,
+                'tahun_keluar' => $data ? $data->tahun_keluar : null,
+                'foto' => $data ? $data->foto : null,
+                'status' => $user->is_active,
+                'barcode' => $data ? $data->barcode : null,
+            ],
+        ]);
+    }
+
+    /**
+     * PHASE 1 — PROFILE UPDATE (editable fields only)
+     */
+    public function profileUpdateJson(Request $request)
+    {
+        $request->validate([
+            'no_hp' => 'nullable|string',
+            'email' => 'nullable|email|max:255',
+            'alamat' => 'nullable|string',
+            'pekerjaan' => 'nullable|string|max:255',
+            'tempat_lahir' => 'nullable|string|max:255',
+            'foto' => 'nullable|image|max:5120',
+        ]);
+
+        $user = $request->user();
+        $data = DataUser::where('id_users', $user->id)->first();
+
+        $foto = $data ? $data->foto : null;
+        if ($request->hasFile('foto')) {
+            $foto = $request->file('foto')->store('image/anggota', 'public');
+        }
+
+        if ($data) {
+            $data->update([
+                'no_hp' => $request->input('no_hp', $data->no_hp),
+                'alamat' => $request->input('alamat', $data->alamat),
+                'pekerjaan' => $request->input('pekerjaan', $data->pekerjaan),
+                'tempat_lahir' => $request->input('tempat_lahir', $data->tempat_lahir),
+                'foto' => $foto,
+            ]);
+        }
+
+        if ($request->filled('email')) {
+            $user->update(['email' => $request->email]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Profile updated successfully',
+            'data' => [
+                'name' => $user->name,
+                'id_anggota' => $user->id_anggota,
+                'email' => $user->email,
+                'no_hp' => $data ? $data->no_hp : null,
+                'alamat' => $data ? $data->alamat : null,
+                'pekerjaan' => $data ? $data->pekerjaan : null,
+                'tempat_lahir' => $data ? $data->tempat_lahir : null,
+                'foto' => $foto,
+                'status' => $user->is_active,
+            ],
+        ]);
+    }
+
+    /**
+     * PHASE 1 — CHANGE PASSWORD
+     */
+    public function changePassword(Request $request)
+    {
+        $request->validate([
+            'current_password' => 'required|string',
+            'password' => 'required|string|min:6|confirmed',
+        ]);
+
+        $user = $request->user();
+
+        if (! Hash::check($request->current_password, $user->password)) {
+            throw ValidationException::withMessages([
+                'current_password' => ['Password lama salah.'],
+            ]);
+        }
+
+        $user->update([
+            'password' => Hash::make($request->password),
+            'password_changed_at' => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Password berhasil diubah',
+        ]);
+    }
+
+    /**
+     * PHASE 1 — ID CARD
+     * QR encodes users.id_anggota (the scannable member identity). The legacy
+     * data_users.barcode remains as the physical card image.
+     */
+    public function idCard(Request $request)
+    {
+        $user = $request->user();
+        $data = DataUser::where('id_users', $user->id)->first();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id' => $user->id,
+                'id_anggota' => $user->id_anggota,
+                'name' => $user->name,
+                'foto' => $data ? $data->foto : null,
+                'niqobah' => $data ? $data->niqobah : null,
+                'status' => $user->is_active,
+                'barcode' => $data ? $data->barcode : null,
+            ],
+        ]);
+    }
+
+    /**
+     * PHASE 1 — GENERATE ACCOUNT (members/{id}/account)
+     * Create a login account for a member that does not have one yet.
+     * Idempotent: returns 409 when the account already exists.
+     */
+    public function generateAccount($id)
+    {
+        $member = DataUser::where('id_users', $id)->first();
+
+        if (User::where('id', $id)->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anggota sudah memiliki akun.',
+            ], 409);
+        }
+
+        $lastUser = User::orderBy('id', 'desc')->first();
+        $newId = $lastUser ? (int) $lastUser->id_anggota + 1 : 1001;
+        $tempPassword = Str::random(10);
+
+        $user = new User();
+        $user->id = (int) $id;
+        $user->name = 'Anggota';
+        $user->email = null;
+        $user->id_anggota = (string) $newId;
+        $user->password = Hash::make($tempPassword);
+        $user->is_active = '1';
+        $user->password_changed_at = null;
+        $user->save();
+
+        if ($member) {
+            $member->update(['is_active' => '1']);
+        }
+
+        foreach (['anggota', 'profil'] as $role) {
+            HakAksesRole::create([
+                'id_users' => $user->id,
+                'nama_role' => $role,
+            ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Akun berhasil dibuat.',
+            'password' => $tempPassword,
+        ], 201);
+    }
+
+    /**
+     * PHASE 1 — BULK GENERATE ACCOUNT
+     * Only creates accounts for members that do not have a user yet.
+     * Idempotent: safe to run repeatedly; never overwrites existing data.
+     */
+    public function bulkGenerate(Request $request)
+    {
+        $members = DataUser::whereDoesNotHave('user')->get();
+
+        $created = 0;
+        foreach ($members as $member) {
+            if (User::where('id', $member->id_users)->exists()) {
+                continue;
+            }
+
+            $lastUser = User::orderBy('id', 'desc')->first();
+            $newId = $lastUser ? (int) $lastUser->id_anggota + 1 : 1001;
+
+            $user = new User();
+            $user->id = (int) $member->id_users;
+            $user->name = 'Anggota';
+            $user->email = null;
+            $user->id_anggota = (string) $newId;
+            $user->password = Hash::make(Str::random(10));
+            $user->is_active = '1';
+            $user->password_changed_at = null;
+            $user->save();
+
+            foreach (['anggota', 'profil'] as $role) {
+                HakAksesRole::create([
+                    'id_users' => $user->id,
+                    'nama_role' => $role,
+                ]);
+            }
+
+            $created++;
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'created' => $created,
+                'skipped' => $members->count() - $created,
+            ],
+        ]);
+    }
+
+    /**
+     * PHASE 1 — RESET PASSWORD (members/{id}/account)
+     * Gives the member a fresh temporary password; forces a change on login.
+     */
+    public function resetAccount(Request $request, $id)
+    {
+        $user = User::where('id', $id)->first();
+        if (! $user) {
+            return response()->json(['success' => false, 'message' => 'Akun tidak ditemukan.'], 404);
+        }
+
+        $tempPassword = Str::random(10);
+
+        $user->update([
+            'password' => Hash::make($tempPassword),
+            'password_changed_at' => null,
+            'is_active' => '1',
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Password berhasil di-reset.',
+            'password' => $tempPassword,
+        ]);
+    }
+
+    /**
+     * PHASE 1 — ACTIVATE / DEACTIVATE ACCOUNT (members/{id}/account/status)
+     */
+    public function setAccountStatus(Request $request, $id)
+    {
+        $request->validate([
+            'is_active' => 'required|string|in:1,0',
+        ]);
+
+        $user = User::where('id', $id)->first();
+        if (! $user) {
+            return response()->json(['success' => false, 'message' => 'Akun tidak ditemukan.'], 404);
+        }
+
+        $user->update(['is_active' => $request->is_active]);
+
+        DataUser::where('id_users', $id)->update(['is_active' => $request->is_active]);
+
+        return response()->json([
+            'success' => true,
+            'message' => $request->is_active === '1' ? 'Akun diaktifkan.' : 'Akun dinonaktifkan.',
         ]);
     }
 
