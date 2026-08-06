@@ -28,4 +28,22 @@ class OrderNumberService
 
         return sprintf('MZT-%s-%06d', $year, $count + 1);
     }
+
+    /**
+     * Build the next payment number for today's year.
+     *
+     * Format PAY-YYYY-NNNNNN (plan Lampiran #3). Called inside a DB
+     * transaction; uniqueness is enforced by `payments.nomor_payment`.
+     *
+     * @return string e.g. PAY-2026-000001
+     */
+    public function nextPayment(): string
+    {
+        $year = date('Y');
+        $count = DB::table('payments')
+            ->whereYear('created_at', $year)
+            ->count();
+
+        return sprintf('PAY-%s-%06d', $year, $count + 1);
+    }
 }

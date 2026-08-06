@@ -4,6 +4,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\ApiController;
 use App\Http\Controllers\admin\C_transaksi;
+use App\Http\Controllers\PaymentController;
 
 /*
 |--------------------------------------------------------------------------
@@ -72,6 +73,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/events/{id}/register', [ApiController::class, 'registerEvent']);
     Route::get('/my-orders', [ApiController::class, 'myOrders']);
     Route::get('/orders/{uuid}', [ApiController::class, 'orderShow']);
+
+    // Phase 2B — Payment Engine (Sprint 2)
+    Route::post('/orders/{uuid}/payment', [PaymentController::class, 'upload'])
+        ->middleware('throttle:10,1');
+    Route::get('/payments/{uuid}', [PaymentController::class, 'show']);
+    Route::get('/payments/{uuid}/proof', [PaymentController::class, 'proof']);
+    Route::put('/payments/{uuid}/verify', [PaymentController::class, 'verify']);
+    Route::get('/my-payments', [PaymentController::class, 'myPayments']);
+    Route::post('/payments', [PaymentController::class, 'store']);
 
     // News
     Route::get('/news', [ApiController::class, 'newsIndex']);
