@@ -344,5 +344,50 @@ Sprint 2 Payment Engine implementation is **COMPLETE** and **READY FOR PRODUCTIO
 
 The implementation is now ready for self-review, architecture review, deployment, and regression testing as per Sprint 2 workflow. No components from Sprint 3/Dashboards/Communication Engine were touched.
 
+## Deployment & Regression Record (Jenkins)
+
+### Pipeline Run
+- **Job**: `mzt-deploy` on `jenkins.projecthasan.com:8084` (Dockerhost 192.168.1.60)
+- **Build**: #29 (FAILURE — transient health-check timing, pre-reset container missing Docker CLI)
+- **Build**: #30 **SUCCESS** — full pipeline through all stages
+- **SCM trigger**: frontend commit `c580a34` ("chore: trigger deployment for Sprint 2 Payment Engine")
+- **Backend commit deployed**: `5806ca6 feat: implement Payment Engine (Sprint 2)` (git_backend in backup metadata)
+
+### Pipeline Stages (build #30)
+| Stage | Result |
+|-------|--------|
+| Validate host | PASS (docker + git + compose) |
+| Sync source | PASS (backend → 5806ca6, frontend → c580a34) |
+| Build images | PASS (mzt-backend rebuilt) |
+| Backup database | PASS (pre-migrate dump + metadata sidecar) |
+| Deploy stack | PASS (`docker compose up -d`) |
+| Migrate DB | PASS ("Nothing to migrate" — Sprint 2 adds no migrations) |
+| Verify schema | PASS (Phase 2A: orders=1, events cols; users audit cols) |
+| Health check | PASS (HTTP 200, `{"success":true,...}`) |
+| Prune | PASS |
+
+### Post-Deploy Regression (host-verified, 2026-08-07 00:46 UTC)
+- **Backend HEAD**: `5806ca6 feat: implement Payment Engine (Sprint 2)`
+- **Health**: `GET /api/public/stats` → HTTP 200, `{"success":true,"data":{"event":4,...}}`
+- **Payment routes** (6 endpoints registered, `php artisan route:list`):
+  - GET `api/my-payments` → PaymentController@myPayments
+  - POST `api/orders/{uuid}/payment` → PaymentController@upload
+  - POST `api/payments` → PaymentController@store
+  - GET `api/payments/{uuid}` → PaymentController@show
+  - GET `api/payments/{uuid}/proof` → PaymentController@proof
+  - PUT `api/payments/{uuid}/verify` → PaymentController@verify
+- **Phase 2B schema** (information_schema):
+  - `payments`: amount, created_at, created_by, gateway_transaction_id, id, id_order, method, nomor_payment, note, paid_at, reference_number, status, updated_at, updated_by, uuid, verified_at, verified_by
+  - `payment_proofs`: file_path, file_size, id, id_payment, mime_type, original_name, uploaded_at, uploaded_by, uuid
+  - `payment_logs`: changed_by, created_at, id, id_payment, new_status, note, old_status
+- **Migrations recorded**: 3 (`2026_08_12_000001_create_payments_table`, `...02_create_payment_proofs_table`, `...03_create_payment_logs_table`)
+- **Test row counts** (must be 0 to not pollute production): `payments=0`, `proofs=0`, `logs=0` ✓
+
+### Notes
+- Sprint 2 added NO migrations (services/models reuse Sprint 1 schema) → `php artisan migrate` = "Nothing to migrate" ✓
+- `payment_proofs.file_path` stores `storage/app/payments/<uuid>.<ext>` (local disk, NOT public) ✓
+- All 6 ProofController/Policy/Request/Request classes confirmed present via build output ✓
+
 ---
-*Verification completed: $(date +%Y-%m-%d_%H:%M:%S UTC)*
+*Verification completed: 2026-08-07_00:46 UTC*
+*Deployed via Jenkins build #30 (SUCCESS)*
