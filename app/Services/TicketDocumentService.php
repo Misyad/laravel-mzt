@@ -3,7 +3,7 @@
 namespace App\Services;
 
 use App\Models\Ticket;
-use Barryvdh\DomPDF\Facade as PDF;
+use Barryvdh\DomPDF\Facade\Pdf as PDF;
 use Milon\Barcode\Facades\DNS2DFacade as DNS2D;
 
 /**
