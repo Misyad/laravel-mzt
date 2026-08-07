@@ -64,7 +64,11 @@ class TicketService
                 'changed_by' => $actor->id,
             ]);
 
-            event(new TicketIssued($ticket, $actor));
+            // Transactional consistency (Gate 2, ADR-016): only dispatch the
+            // domain event after the surrounding transaction really commits.
+            // If the transaction rolls back, the callback is dropped and no
+            // TicketIssued is ever emitted.
+            DB::afterCommit(fn () => event(new TicketIssued($ticket, $actor)));
 
             return ['ok' => true, 'ticket' => $ticket->fresh(), 'issued' => true, 'message' => 'Tiket berhasil diterbitkan', 'code' => 201];
         });

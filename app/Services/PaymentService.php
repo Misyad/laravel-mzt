@@ -26,6 +26,7 @@ class PaymentService
     public function __construct(
         protected PaymentProofService $proofs,
         protected OrderNumberService $orderNumber,
+        protected TicketService $tickets,
     ) {
     }
 
@@ -34,7 +35,7 @@ class PaymentService
      *
      * @param  array<array-key,mixed>  $data  expected: method (string), amount (numeric),
      *                                        reference_number?, paid_at (datetime)?, note?
-     * @return array{ok: bool, message?: string, code: int, payment?: \App\Models\Payment}
+     * @return array{ok: bool, message?: string, code: int, payment?: \App\Models\Payment, ticket?: \App\Models\Ticket}
      */
     public function create(User $actor, Order $order, array $data): array
     {
@@ -80,12 +81,24 @@ class PaymentService
             $this->log($payment, PaymentStatus::PENDING->value, $status, $actor->id, $data['note'] ?? null);
 
             if ($isImmediate) {
-                event(new PaymentStatusChanged($payment, PaymentStatus::PENDING->value, PaymentStatus::PAID->value, $actor));
+                DB::afterCommit(fn () => event(new PaymentStatusChanged($payment, PaymentStatus::PENDING->value, PaymentStatus::PAID->value, $actor)));
             }
 
-            $this->syncOrderPaymentStatus($order->fresh());
+            $freshOrder = $order->fresh();
+            $this->syncOrderPaymentStatus($freshOrder);
 
-            return ['ok' => true, 'payment' => $payment->fresh(), 'message' => 'Pembayaran berhasil dibuat', 'code' => 201];
+            // Gate 1 (Instant Payment → Ticket): every path that lands on a
+            // fully PAID order must produce a ticket, through the same business
+            // rule (TicketService::generate). This covers cash / sponsor /
+            // complimentary right here, and transfer via PaymentVerificationService
+            // on verify. Idempotent: never creates a duplicate ticket.
+            $ticket = null;
+            if ($this->tickets->canIssue($freshOrder)) {
+                $issued = $this->tickets->generate($actor, $freshOrder);
+                $ticket = $issued['ticket'] ?? null;
+            }
+
+            return ['ok' => true, 'payment' => $payment->fresh(), 'ticket' => $ticket, 'message' => 'Pembayaran berhasil dibuat', 'code' => 201];
         });
     }
 
@@ -131,7 +144,7 @@ class PaymentService
             $payment->forceFill(['status' => $next, 'updated_by' => $user->id])->save();
 
             $this->log($payment, $old, $next, $user->id, $notes);
-            event(new PaymentStatusChanged($payment, $old, $next, $user));
+            DB::afterCommit(fn () => event(new PaymentStatusChanged($payment, $old, $next, $user)));
 
             return ['ok' => true, 'payment' => $payment->fresh(['proofs']), 'message' => 'Bukti pembayaran diunggah', 'code' => 200];
         });

@@ -70,7 +70,8 @@ class PaymentVerificationService
             // Keep the order's payment status in sync with outstanding (§9.8).
             $this->payment->syncOrderPaymentStatus($payment->order);
 
-            event(new PaymentStatusChanged($payment, $old, $status, $actor, $note));
+            // Transactional consistency (Gate 2): dispatch only after commit.
+            DB::afterCommit(fn () => event(new PaymentStatusChanged($payment, $old, $status, $actor, $note)));
 
             // Paid → the order is now entitled to its ticket (PRD §10.3).
             // Idempotent inside TicketService: an existing ticket is returned.

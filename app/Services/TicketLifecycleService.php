@@ -45,7 +45,7 @@ class TicketLifecycleService
             ]);
 
             // Generic lifecycle signal (action = reissue), status did not change.
-            event(new TicketStatusChanged($ticket, $ticket->status, $ticket->status, 'reissue', $actor, $note));
+            DB::afterCommit(fn () => event(new TicketStatusChanged($ticket, $ticket->status, $ticket->status, 'reissue', $actor, $note)));
 
             return ['ok' => true, 'ticket' => $ticket->fresh(), 'message' => 'Tiket berhasil diterbitkan ulang', 'code' => 200];
         });
@@ -80,7 +80,7 @@ class TicketLifecycleService
                 'changed_by' => $actor->id,
             ]);
 
-            event(new TicketStatusChanged($ticket, $old, $new, 'revoke', $actor, $note));
+            DB::afterCommit(fn () => event(new TicketStatusChanged($ticket, $old, $new, 'revoke', $actor, $note)));
 
             return ['ok' => true, 'ticket' => $ticket->fresh(), 'changed' => true, 'message' => 'Tiket dibatalkan', 'code' => 200];
         });
