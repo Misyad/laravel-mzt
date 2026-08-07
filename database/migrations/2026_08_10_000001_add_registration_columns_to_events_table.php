@@ -40,18 +40,21 @@ return new class extends Migration
         });
 
         // Backfill `harga_amount` from the legacy `harga` varchar (e.g. "Rp. 100.000").
-        // Only fills rows still NULL so it is safe to re-run.
-        $rows = DB::table('events')
-            ->whereNull('harga_amount')
-            ->select(['id', 'harga'])
-            ->get();
+        // Only fills rows still NULL so it is safe to re-run. Guarded on the legacy
+        // `harga` column so a fresh database (e.g. test suite) still migrates.
+        if (Schema::hasColumn('events', 'harga')) {
+            $rows = DB::table('events')
+                ->whereNull('harga_amount')
+                ->select(['id', 'harga'])
+                ->get();
 
-        foreach ($rows as $row) {
-            $amount = $this->parseAmount($row->harga);
-            if ($amount !== null) {
-                DB::table('events')->where('id', $row->id)->update([
-                    'harga_amount' => $amount,
-                ]);
+            foreach ($rows as $row) {
+                $amount = $this->parseAmount($row->harga);
+                if ($amount !== null) {
+                    DB::table('events')->where('id', $row->id)->update([
+                        'harga_amount' => $amount,
+                    ]);
+                }
             }
         }
     }

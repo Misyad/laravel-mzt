@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\ApiController;
 use App\Http\Controllers\admin\C_transaksi;
 use App\Http\Controllers\CommunicationController;
+use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\TicketController;
 
@@ -51,10 +52,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/members/{id}/account', [ApiController::class, 'resetAccount']);
     Route::put('/members/{id}/account/status', [ApiController::class, 'setAccountStatus']);
 
-    // Dashboard
+// Dashboard
     Route::get('/dashboard/stats', [ApiController::class, 'dashboardStats']);
     Route::get('/dashboard/calendar', [ApiController::class, 'dashboardCalendar']);
     Route::get('/dashboard/events', [ApiController::class, 'dashboardEvents']);
+
+    // Sprint 5A — Finance Dashboard (read-only)
+    Route::get('/dashboard/finance/overview', [DashboardController::class, 'overview']);
+    Route::get('/dashboard/finance/registration', [DashboardController::class, 'registration']);
+    Route::get('/dashboard/finance/revenue', [DashboardController::class, 'revenue']);
+    Route::get('/dashboard/finance/payments', [DashboardController::class, 'payments']);
 
     // Members
     Route::get('/members', [ApiController::class, 'membersIndex']);
