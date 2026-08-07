@@ -18,12 +18,15 @@ use Illuminate\Support\Str;
  *  - Reject duplicate registration for the same event (UNIQUE id_event+id_anggota).
  *  - Take an immutable snapshot of the event into the order (S3).
  *  - Assign UUID (S1) and admin order number.
+ *  - For free events (total_amount == 0) a ticket is issued right away
+ *    (PRD §10.3), wired through TicketService.
  */
 class RegistrationService
 {
     public function __construct(
         protected EventCapacityService $capacity,
         protected OrderNumberService $orderNumber,
+        protected TicketService $tickets,
     ) {
     }
 
@@ -67,7 +70,14 @@ class RegistrationService
                 'payment_status' => PaymentStatus::PENDING->value,
             ]);
 
-            return ['ok' => true, 'order' => $order, 'message' => 'Registrasi berhasil', 'code' => 201];
+            // Free event → ticket issued immediately (PRD §10.3).
+            $ticket = null;
+            if ($this->tickets->canIssue($order)) {
+                $issued = $this->tickets->generate($user, $order);
+                $ticket = $issued['ticket'] ?? null;
+            }
+
+            return ['ok' => true, 'order' => $order, 'ticket' => $ticket, 'message' => 'Registrasi berhasil', 'code' => 201];
         });
     }
 }

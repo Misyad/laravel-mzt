@@ -22,6 +22,7 @@ class PaymentVerificationService
 {
     public function __construct(
         protected PaymentService $payment,
+        protected TicketService $tickets,
     ) {
     }
 
@@ -71,7 +72,15 @@ class PaymentVerificationService
 
             event(new PaymentStatusChanged($payment, $old, $status, $actor, $note));
 
-            return ['ok' => true, 'payment' => $payment->fresh(), 'changed' => true, 'message' => $status === PaymentStatus::PAID->value ? 'Pembayaran disetujui' : 'Pembayaran ditolak', 'code' => 200];
+            // Paid → the order is now entitled to its ticket (PRD §10.3).
+            // Idempotent inside TicketService: an existing ticket is returned.
+            $ticket = null;
+            if ($status === PaymentStatus::PAID->value && $this->tickets->canIssue($payment->order->fresh())) {
+                $issued = $this->tickets->generate($actor, $payment->order->fresh());
+                $ticket = $issued['ticket'] ?? null;
+            }
+
+            return ['ok' => true, 'payment' => $payment->fresh(), 'ticket' => $ticket, 'changed' => true, 'message' => $status === PaymentStatus::PAID->value ? 'Pembayaran disetujui' : 'Pembayaran ditolak', 'code' => 200];
         });
     }
 

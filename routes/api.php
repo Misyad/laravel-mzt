@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\ApiController;
 use App\Http\Controllers\admin\C_transaksi;
 use App\Http\Controllers\PaymentController;
+use App\Http\Controllers\TicketController;
 
 /*
 |--------------------------------------------------------------------------
@@ -82,6 +83,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/payments/{uuid}/verify', [PaymentController::class, 'verify']);
     Route::get('/my-payments', [PaymentController::class, 'myPayments']);
     Route::post('/payments', [PaymentController::class, 'store']);
+
+    // Phase 2B — Ticket Engine (Sprint 3)
+    Route::get('/orders/{uuid}/ticket', [TicketController::class, 'myTicket']);
+    Route::get('/tickets/{uuid}', [TicketController::class, 'show']);
+    Route::get('/tickets/{uuid}/download', [TicketController::class, 'download']);
+    Route::post('/tickets/{uuid}/reissue', [TicketController::class, 'reissue']);
+    Route::delete('/tickets/{uuid}', [TicketController::class, 'revoke']);
 
     // News
     Route::get('/news', [ApiController::class, 'newsIndex']);
