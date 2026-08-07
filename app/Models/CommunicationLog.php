@@ -19,5 +19,7 @@ class CommunicationLog extends Model
         'retry_count' => 'integer',
         'created_at' => 'datetime',
         'delivered_at' => 'datetime',
+        'read_at' => 'datetime',
+        'payload' => 'array',
     ];
 }

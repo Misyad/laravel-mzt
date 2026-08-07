@@ -4,6 +4,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\ApiController;
 use App\Http\Controllers\admin\C_transaksi;
+use App\Http\Controllers\CommunicationController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\TicketController;
 
@@ -90,6 +91,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/tickets/{uuid}/download', [TicketController::class, 'download']);
     Route::post('/tickets/{uuid}/reissue', [TicketController::class, 'reissue']);
     Route::delete('/tickets/{uuid}', [TicketController::class, 'revoke']);
+
+    // Sprint 4 — Communication Engine (PRD §20 / ADR-016)
+    Route::get('/notifications', [CommunicationController::class, 'index']);
+    Route::put('/notifications/read', [CommunicationController::class, 'markRead']);
+    Route::patch('/notifications/read-all', [CommunicationController::class, 'markAllRead']);
+    Route::get('/communication-logs', [CommunicationController::class, 'communicationLogs']);
 
     // News
     Route::get('/news', [ApiController::class, 'newsIndex']);
