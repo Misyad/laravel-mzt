@@ -2,7 +2,7 @@
 
 **Project** : Maziltutholiban Members Platform (MZT Apps)
 **Sprint** : Sprint 5B — Analytics, Ticket/Operational Monitoring & CSV Export
-**Status** : **APPROVED WITH CONDITIONS**
+**Status** : **APPROVED WITH CONDITIONS** — verdict awal dipertahankan; kondisi blocking telah ditutup (lihat §26 Architecture Gate Closure)
 **Tanggal Review** : 09 Agustus 2026
 **Dokumen yang direview** : `docs/SPRINT5B_PLANNING.md` (v1.0, 25 bab)
 **Metode** : Static review planning vs PRD, ADR, arsitektur Sprint 5A (implementasi aktual), dan source of truth
@@ -395,3 +395,83 @@ Setelah kedua kondisi di atas terpenuhi dan terdokumentasi, implementasi Sprint
 ---
 
 *Dokumen ini merupakan bagian dari Sprint 5B Architecture Review. Tidak ada kode aplikasi, PRD, maupun ADR yang diubah selama review. Konflik yang ditemukan dilaporkan sebagai temuan, bukan diselesaikan diam-diam.*
+
+---
+
+# 26. Architecture Gate Closure
+
+**Tanggal** : 09 Agustus 2026
+**Pemutus** : MZT Core Team (keputusan Architecture Gate Closure disetujui)
+**Acuan** : ADR-011 amendment, `SPRINT5B_PLANNING.md` (amended), evidence implementasi aktual (Sprint 3 Verification Report, `app/Enums/TicketStatus.php`, `TicketService`, `TicketLifecycleService`, `TicketPolicy`, `RoleGuard`, migration `tickets`)
+
+Bagian ini mendokumentasikan penutupan dua kondisi blocking (**MAJ-01** dan
+**MAJ-02**) yang ditetapkan pada §25. Verdict awal **APPROVED WITH CONDITIONS**
+tetap dipertahankan sebagai catatan historis; penutupan kondisi ditambahkan di
+bawah ini secara transparan, tanpa mengubah hasil review yang telah ditulis.
+
+## 26.1 MAJ-01 — RESOLVED via ADR-011 Amendment
+
+- **Keputusan:** ADR-011 di-amend dari **Planned** menjadi **Accepted** dengan
+  canonical ticket state `draft / issued / checked_in / finished / cancelled /
+  revoked` (bukan `not_generated / generated / used`).
+- **Bukti:** ADR-011 amendment mendefinisikan arti status, valid transition,
+  terminal state (`finished`, `cancelled`, `revoked`), makna cancelled vs
+  revoked, QR/ticket validation behavior, hubungan dengan Phase 2C Check-In, dan
+  pernyataan **tidak ada status mapping baru**.
+- **Konsistensi:** canonical state selaras dengan PRD §10.2 / §16.8 / §17.14.4,
+  `app/Enums/TicketStatus.php`, `TicketService` (idempoten, `issued`),
+  `TicketLifecycleService` (`canRevoke` untuk draft/issued/checked_in), dan
+  Sprint 3 Verification Report. Tidak ada perubahan kode, enum, maupun migration.
+- **Dampak:** FR-01 (Ticket Monitoring) kini grouping langsung memakai nilai
+  canonical ADR-011 — tanpa deadlock mapping.
+
+## 26.2 MAJ-02 — RESOLVED via Explicit Verifier-Only Export Authorization
+
+- **Keputusan:** CSV Export (data finansial) **hanya untuk role verifier**.
+- **Canonical rule:** `viewExport(User $user) → RoleGuard::canVerify($user)`.
+- **Bukti:** `SPRINT5B_PLANNING.md` §11 (gate `viewExport` → verifier) dan §13
+  (Role Matrix export hanya Finance/Ketua/Admin + matriks respons eksplisit)
+  di-amend sesuai keputusan.
+- **Matriks respons eksplisit:**
+
+  | Role / Kondisi | `GET /api/dashboard/finance/export` |
+  |----------------|--------------------------------------|
+  | Alumni | **403** |
+  | Staff biasa (`dashboard` / `event`) | **403** |
+  | Finance | **200** |
+  | Ketua | **200** |
+  | Admin | **200** |
+  | Unauthenticated | **401** |
+
+- **Dampak:** konsisten dengan `viewAnalytics`, `viewRevenue`, `viewPayment`
+  (verifier-only); risiko kebocoran data finansial via CSV oleh non-verifier
+  ditutup. Regression test 401/403/200 ditambahkan pada `SPRINT5B_PLANNING.md`
+  §18 (Acceptance Criteria) sebagai requirement.
+
+## 26.3 Conditions for Implementation — FULFILLED
+
+| Condition | Status | Bukti |
+|-----------|--------|-------|
+| MAJ-01 diselesaikan — canonical ticket state (ADR amendment / penyelarasan dengan enum aktual) | ✅ **FULFILLED** | ADR-011 amendment → **Accepted** (canonical `draft/issued/checked_in/finished/cancelled/revoked`) |
+| MAJ-02 diselesaikan — rule otorisasi export vs analytics + test 403 | ✅ **FULFILLED** | `viewExport` = `RoleGuard::canVerify` (verifier-only); matriks 401/403/200 terdokumentasi + regression requirement di Planning |
+
+## 26.4 Sprint 5B — ELIGIBLE FOR IMPLEMENTATION
+
+- Kedua kondisi blocking pada §25 **telah terpenuhi dan terdokumentasi**.
+- **Sprint 5B kini READY FOR IMPLEMENTATION** (status: NOT STARTED).
+- Implementasi hanya boleh dimulai setelah tahap ini disetujui; seluruh aturan
+  implementasi Sprint 5B (read-only, tanpa migration tanpa keputusan, endpoint
+  PROPOSED tidak diklaim EXISTING, performance gate, regression) tetap berlaku.
+
+## 26.5 Follow-up Governance (tidak memblokir implementasi)
+
+- **PRD amendment §16.8 & §17.14.4** (menambahkan status `revoked` ke daftar
+  status Ticket) **dicatat sebagai follow-up governance item** dan **tidak**
+  dibuat pada Gate Closure ini. Akan diproses sebagai keputusan terpisah.
+
+## 26.6 Scope Gate Closure
+
+- Yang berubah: ADR-011 (docs), `SPRINT5B_PLANNING.md` (docs), dokumen ini
+  (docs).
+- Yang **tidak** berubah: kode aplikasi, `TicketStatus.php`, database/migration,
+  PRD, verdict awal review, deployment.

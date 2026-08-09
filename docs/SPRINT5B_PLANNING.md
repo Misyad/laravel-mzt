@@ -102,7 +102,7 @@ Seluruh fitur read-only dan acceptance-oriented.
 
 ### FR-01 — Ticket Monitoring
 - Sistem menyediakan ringkasan jumlah tiket **per status**.
-- Status mengikuti **canonical state machine ADR-011** (`not_generated`, `generated`, `used`, `cancelled`). **Tidak boleh dibuat mapping status baru** tanpa keputusan ADR.
+- Status mengikuti **canonical state machine ADR-011** (`draft`, `issued`, `checked_in`, `finished`, `cancelled`, `revoked` — ADR-011 telah di-amend menjadi **Accepted** pada Architecture Gate Closure Sprint 5B). **Tidak boleh dibuat mapping status baru** tanpa keputusan ADR.
 - Filter periode (start/end) opsional.
 
 ### FR-02 — Operational Summary
@@ -216,7 +216,9 @@ Kandidat (desain, bukan implementasi):
 |--------|------|--------|------|
 | GET | `/api/dashboard/finance/tickets` | Ticket monitoring per status (ADR-011) | `viewTickets` (staff) |
 | GET | `/api/dashboard/finance/analytics` | Analytics 5 dimensi (trend/conversion/distribution) | `viewAnalytics` (verifier) |
-| GET | `/api/dashboard/finance/export` | CSV export (file stream) | `viewExport` (staff/verifier) |
+| GET | `/api/dashboard/finance/export` | CSV export (file stream) | `viewExport` (verifier) |
+
+Catatan authorization: CSV Export berisi data finansial → **hanya verifier** (`RoleGuard::canVerify`), konsisten dengan `viewAnalytics` (lihat §13).
 
 Catatan: **endpoint PROPOSED belum ada** — tidak diklaim sebagai endpoint yang sudah hidup.
 
@@ -241,16 +243,34 @@ Role staff: `dashboard` / `event` / `finance` / `ketua` / `admin`. Verifier: `fi
 
 **Role Matrix:**
 
-| Area / Data | Staff | Finance | Ketua | Admin |
-|-------------|-------|---------|-------|-------|
-| Ticket Monitoring | ✅ | ✅ | ✅ | ✅ |
-| Operational Summary | ✅ | ✅ | ✅ | ✅ |
-| Analytics | ❌ | ✅ | ✅ | ✅ |
-| CSV Export | ✅ | ✅ | ✅ | ✅ |
+| Area / Data | Alumni | Staff biasa (dashboard/event) | Finance | Ketua | Admin |
+|-------------|--------|-------------------------------|---------|-------|-------|
+| Ticket Monitoring | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Operational Summary | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Analytics | ❌ | ❌ | ✅ | ✅ | ✅ |
+| CSV Export | ❌ | ❌ | ✅ | ✅ | ✅ |
 
 - Semua endpoint: `auth:sanctum` + Policy method spesifik.
 - Data finansial/analytics hanya untuk role yang berhak; selainnya **403**.
 - Export terbatas pada data yang boleh dilihat role tersebut.
+
+**CSV Export — canonical authorization (Architecture Gate Closure MAJ-02):**
+
+```
+viewExport(User $user) → RoleGuard::canVerify($user)
+```
+
+CSV Export dapat mengandung data finansial sehingga **hanya role verifier**
+(`finance`/`ketua`/`admin`) yang boleh mengaksesnya. Matriks respons eksplisit:
+
+| Role / Kondisi | `GET /api/dashboard/finance/export` |
+|----------------|--------------------------------------|
+| Alumni | **403** |
+| Staff biasa (`dashboard` / `event`) | **403** |
+| Finance | **200** |
+| Ketua | **200** |
+| Admin | **200** |
+| Unauthenticated | **401** |
 
 ---
 
@@ -307,14 +327,17 @@ Menghubungkan dengan debt yang sudah tercatat:
 
 Checklist yang dapat diuji:
 
-- [ ] `/api/dashboard/finance/tickets` tersedia, read-only, format `{success, data}`, status mengikuti ADR-011.
+- [ ] `/api/dashboard/finance/tickets` tersedia, read-only, format `{success, data}`, status mengikuti ADR-011 canonical (`draft/issued/checked_in/finished/cancelled/revoked`) **tanpa mapping status baru**.
 - [ ] `/api/dashboard/finance/analytics` tersedia, read-only, mencakup 5 dimensi analytics.
 - [ ] `/api/dashboard/finance/export` mengembalikan **CSV file stream** (Content-Type `text/csv`), bukan JSON.
 - [ ] Role gate diterapkan: analytics → verifier (403 untuk non-verifier); ticket/operational → staff.
+- [ ] **MAJ-01 (ADR-011):** ADR-011 berstatus **Accepted** dengan canonical state, valid transition, terminal state, dan definisi cancelled vs revoked terdokumentasi (di-amend pada Architecture Gate Closure).
+- [ ] **MAJ-02 (export):** `viewExport` = `RoleGuard::canVerify`; **CSV Export hanya untuk verifier**.
 - [ ] Data kosong tidak menyebabkan error (nilai kosong/0).
 - [ ] Tidak ada mutasi terhadap Order/Payment/Ticket dari endpoint baru.
 - [ ] Tidak ada migration baru tanpa keputusan Architecture Review + change control.
 - [ ] Regression suite Sprint 5B lulus (termasuk 403 & empty dataset).
+- [ ] **Regression authorization export:** unauthenticated → **401**; Alumni & staff biasa (`dashboard`/`event`) → **403**; Finance/Ketua/Admin → **200**.
 - [ ] Tidak ada error TypeScript/regression **baru** yang tersisa; debt pre-existing tetap non-blocking.
 
 ---
@@ -437,6 +460,15 @@ Kebutuhan migration/index (jika muncul) juga melalui jalur ini: dibahas pada Arc
 - Endpoint PROPOSED ditandai jelas; tidak diklaim sudah ada.
 - Tidak ada scope creep; Sprint 5B tetap read-only.
 - Tidak menghasilkan kode.
+
+# Amendment — Architecture Gate Closure (MAJ-01 & MAJ-02)
+
+Di-amend setelah Architecture Review Sprint 5B (verdict **APPROVED WITH CONDITIONS**) untuk menuntaskan dua kondisi blocking:
+
+- **MAJ-01 — canonical ticket state:** FR-01, §6, §7, §18 kini mengacu pada **ADR-011 yang di-amend ke Accepted** (canonical `draft/issued/checked_in/finished/cancelled/revoked`). Tidak ada status mapping baru.
+- **MAJ-02 — CSV export authorization:** §11 & §13 kini menetapkan `viewExport` = `RoleGuard::canVerify` (**verifier-only**); matriks respons eksplisit **401 / 403 / 200** ditambahkan di §13, regression requirement di §18 & §19.
+
+Tidak ada perubahan kode, migration, PRD, maupun scope lain selama amendment ini.
 
 ---
 
