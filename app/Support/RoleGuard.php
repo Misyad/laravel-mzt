@@ -21,6 +21,9 @@ class RoleGuard
     /** Roles allowed to approve/reject payments (PRD §17.12: Finance & Admin). */
     public const VERIFIER_ROLES = ['finance', 'ketua', 'admin'];
 
+    /** Dedicated check-in operator roles (Phase 2C — PRD §17.12). */
+    public const CHECK_IN_ROLES = ['prisensi', 'event'];
+
     /**
      * The role names attached to a user.
      *
@@ -54,5 +57,14 @@ class RoleGuard
     public static function canVerify(User $user): bool
     {
         return self::hasAnyRole($user, self::VERIFIER_ROLES);
+    }
+
+    /**
+     * Whether the user may check in attendees (Phase 2C — PRD §17.12):
+     * dedicated operators (prisensi / event) or any verifier (finance / ketua / admin).
+     */
+    public static function canCheckIn(User $user): bool
+    {
+        return self::hasAnyRole($user, self::CHECK_IN_ROLES) || self::canVerify($user);
     }
 }

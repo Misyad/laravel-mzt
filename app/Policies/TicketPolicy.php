@@ -52,4 +52,14 @@ class TicketPolicy
     {
         return RoleGuard::canVerify($user);
     }
+
+    /**
+     * Whether the user may check in a ticket (Phase 2C — PRD §17.12):
+     * prisensi / event operators, or any verifier (finance / ketua / admin).
+     * Permission is role-based, so the ticket instance is not consulted.
+     */
+    public function checkIn(User $user, Ticket $ticket): bool
+    {
+        return RoleGuard::canCheckIn($user);
+    }
 }

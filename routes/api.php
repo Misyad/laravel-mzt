@@ -4,6 +4,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\ApiController;
 use App\Http\Controllers\admin\C_transaksi;
+use App\Http\Controllers\CheckInController;
 use App\Http\Controllers\CommunicationController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\PaymentController;
@@ -119,6 +120,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // Attendance
     Route::get('/attendance/{eventId}/{tanggalId}', [ApiController::class, 'attendanceIndex']);
     Route::post('/attendance', [ApiController::class, 'attendanceStore']);
+
+    // Phase 2C — QR Check-In Foundation (PRD §17.8)
+    Route::post('/checkin', [CheckInController::class, 'store'])
+        ->middleware('throttle:60,1');
 
     // Transactions
     Route::get('/transactions/{eventId}', [ApiController::class, 'transactionsIndex']);

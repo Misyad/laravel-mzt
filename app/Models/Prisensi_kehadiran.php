@@ -15,6 +15,11 @@ class Prisensi_kehadiran extends Model
         return $this->belongsTo(User::class, 'id_anggota', 'id_anggota');
     }
 
+    public function ticket(): BelongsTo
+    {
+        return $this->belongsTo(Ticket::class, 'id_ticket');
+    }
+
 
     protected $fillable = [
         'id_event',
@@ -23,5 +28,14 @@ class Prisensi_kehadiran extends Model
         'id_user',
         'tanggal_kehadiran',
         'jam_kehadiran',
+        'id_ticket',
+        'gate',
+        'scanned_at',
+        'scanned_by',
+    ];
+
+    protected $casts = [
+        'tanggal_kehadiran' => 'datetime',
+        'scanned_at' => 'datetime',
     ];
 }
