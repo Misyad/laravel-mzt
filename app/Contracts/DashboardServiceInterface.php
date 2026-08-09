@@ -3,13 +3,15 @@
 namespace App\Contracts;
 
 use App\DTO\DashboardFilter;
+use App\DTO\OperationalSummary;
 use App\DTO\OverviewKpis;
 use App\DTO\PaymentSummary;
 use App\DTO\RegistrationSummary;
 use App\DTO\RevenueSummary;
+use App\DTO\TicketSummary;
 
 /**
- * Contract for the Dashboard read model (Sprint 5A).
+ * Contract for the Dashboard read model (Sprint 5A / 5B.1).
  *
  * The Dashboard is a pure Read Model: it only reads data and never performs
  * writes. Implementations must never be depend on services that carry side
@@ -24,4 +26,8 @@ interface DashboardServiceInterface
     public function revenueSummary(DashboardFilter $filter): RevenueSummary;
 
     public function paymentSummary(DashboardFilter $filter): PaymentSummary;
+
+    public function ticketSummary(DashboardFilter $filter): TicketSummary;
+
+    public function operationalSummary(DashboardFilter $filter): OperationalSummary;
 }

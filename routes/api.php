@@ -63,6 +63,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/dashboard/finance/revenue', [DashboardController::class, 'revenue']);
     Route::get('/dashboard/finance/payments', [DashboardController::class, 'payments']);
 
+    // Sprint 5B.1 — Ticket & Operational Monitoring (read-only)
+    Route::get('/dashboard/finance/tickets', [DashboardController::class, 'tickets']);
+    Route::get('/dashboard/finance/operational', [DashboardController::class, 'operational']);
+
     // Members
     Route::get('/members', [ApiController::class, 'membersIndex']);
     Route::get('/members/{id}', [ApiController::class, 'membersShow']);

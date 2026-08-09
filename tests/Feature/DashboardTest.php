@@ -202,7 +202,11 @@ class DashboardTest extends TestCase
                 'nomor_ticket' => 'TKT-TEST-' . str_pad((string) $i, 6, '0', STR_PAD_LEFT),
                 'id_order' => $order->id,
                 'qr_payload' => (string) \Illuminate\Support\Str::uuid(),
-                'status' => 'issued',
+                // Rotate across the canonical ADR-011 statuses so that ticket
+                // monitoring grouping is exercised for every status value.
+                'status' => [
+                    'draft', 'issued', 'checked_in', 'finished', 'cancelled', 'revoked',
+                ][$i % 6],
                 'issued_at' => now(),
             ]);
         }
@@ -249,6 +253,19 @@ class DashboardTest extends TestCase
             ->assertJson(['success' => true, 'data' => [
                 'by_status' => [], 'waiting_verification' => 0,
             ]]);
+
+        $this->getJson('/api/dashboard/finance/tickets')
+            ->assertStatus(200)
+            ->assertJson(['success' => true, 'data' => [
+                'total_tickets' => 0, 'by_status' => [],
+            ]]);
+
+        $this->getJson('/api/dashboard/finance/operational')
+            ->assertStatus(200)
+            ->assertJson(['success' => true, 'data' => [
+                'total_orders' => 0, 'total_paid' => 0, 'outstanding' => 0,
+                'waiting_verification' => 0, 'total_tickets' => 0,
+            ]]);
     }
 
     /**
@@ -293,5 +310,98 @@ class DashboardTest extends TestCase
     public function test_unauthenticated_request_is_rejected(): void
     {
         $this->getJson('/api/dashboard/finance/overview')->assertStatus(401);
+        $this->getJson('/api/dashboard/finance/tickets')->assertStatus(401);
+        $this->getJson('/api/dashboard/finance/operational')->assertStatus(401);
+    }
+
+    public function test_ticket_and_operational_are_staff_only(): void
+    {
+        $staff = $this->makeUser('dashboard');
+        Sanctum::actingAs($staff);
+
+        $this->getJson('/api/dashboard/finance/tickets')->assertStatus(200);
+        $this->getJson('/api/dashboard/finance/operational')->assertStatus(200);
+    }
+
+    public function test_alumni_is_forbidden_for_ticket_and_operational(): void
+    {
+        $alumni = $this->makeUser('anggota');
+        Sanctum::actingAs($alumni);
+
+        $this->getJson('/api/dashboard/finance/tickets')->assertStatus(403);
+        $this->getJson('/api/dashboard/finance/operational')->assertStatus(403);
+    }
+
+    public function test_ticket_monitoring_groups_by_canonical_status(): void
+    {
+        $this->seedDomain(60);
+        $staff = $this->makeUser('dashboard');
+        Sanctum::actingAs($staff);
+
+        $response = $this->getJson('/api/dashboard/finance/tickets')
+            ->assertStatus(200)
+            ->assertJson(['success' => true])
+            ->assertJsonPath('data.total_tickets', 60);
+
+        $byStatus = collect($response->json('data.by_status'))
+            ->mapWithKeys(fn ($row) => [$row['status'] => $row['count']]);
+
+        // Canonical ADR-011 statuses — 60 tickets rotated over 6 statuses → 10 each.
+        $this->assertEqualsCanonicalizing(
+            ['draft', 'issued', 'checked_in', 'finished', 'cancelled', 'revoked'],
+            $byStatus->keys()->all(),
+        );
+        foreach ($byStatus as $count) {
+            $this->assertEquals(10, $count);
+        }
+    }
+
+    public function test_operational_summary_aggregates_cross_entities(): void
+    {
+        $this->seedDomain(10);
+        $staff = $this->makeUser('dashboard');
+        Sanctum::actingAs($staff);
+
+        // seedDomain: 10 orders × 100.000; payments: i%5==0 → waiting (2 of 10), else paid (8);
+        // tickets: 10, rotated over canonical statuses.
+        $this->getJson('/api/dashboard/finance/operational')
+            ->assertStatus(200)
+            ->assertJson(['success' => true, 'data' => [
+                'total_orders' => 10,
+                'total_paid' => 800_000,
+                'outstanding' => 200_000,
+                'waiting_verification' => 2,
+                'total_tickets' => 10,
+            ]]);
+    }
+
+    /**
+     * @group performance
+     */
+    public function test_ticket_and_operational_large_dataset_meet_performance_gate(): void
+    {
+        $this->seedDomain(500);
+
+        $staff = $this->makeUser('dashboard');
+        Sanctum::actingAs($staff);
+
+        $start = microtime(true);
+        $tickets = $this->getJson('/api/dashboard/finance/tickets');
+        $ticketsTime = round((microtime(true) - $start) * 1000);
+
+        $tickets->assertStatus(200)
+            ->assertJson(['success' => true])
+            ->assertJsonPath('data.total_tickets', 500);
+        $this->assertLessThan(self::PERFORMANCE_GATE_MS, $ticketsTime, "Tickets took {$ticketsTime}ms");
+
+        $start = microtime(true);
+        $operational = $this->getJson('/api/dashboard/finance/operational');
+        $operationalTime = round((microtime(true) - $start) * 1000);
+
+        $operational->assertStatus(200)
+            ->assertJson(['success' => true])
+            ->assertJsonPath('data.total_orders', 500)
+            ->assertJsonPath('data.total_tickets', 500);
+        $this->assertLessThan(self::PERFORMANCE_GATE_MS, $operationalTime, "Operational took {$operationalTime}ms");
     }
 }

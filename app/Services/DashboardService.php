@@ -4,14 +4,16 @@ namespace App\Services;
 
 use App\Contracts\DashboardServiceInterface;
 use App\DTO\DashboardFilter;
+use App\DTO\OperationalSummary;
 use App\DTO\OverviewKpis;
 use App\DTO\PaymentSummary;
 use App\DTO\RegistrationSummary;
 use App\DTO\RevenueSummary;
+use App\DTO\TicketSummary;
 use App\Queries\DashboardQuery;
 
 /**
- * Dashboard read model implementation (Sprint 5A).
+ * Dashboard read model implementation (Sprint 5A / 5B.1).
  *
  * This service is pure read: it maps aggregate query results into DTOs and
  * returns only DTOs. It never returns Eloquent models, builders, collections,
@@ -69,6 +71,29 @@ class DashboardService implements DashboardServiceInterface
         return new PaymentSummary(
             byStatus: $data['by_status'],
             waitingVerification: $data['waiting_verification'],
+        );
+    }
+
+    public function ticketSummary(DashboardFilter $filter): TicketSummary
+    {
+        $data = $this->query->tickets($filter->start, $filter->end);
+
+        return new TicketSummary(
+            total_tickets: $data['total_tickets'],
+            byStatus: $data['by_status'],
+        );
+    }
+
+    public function operationalSummary(DashboardFilter $filter): OperationalSummary
+    {
+        $data = $this->query->operational($filter->start, $filter->end);
+
+        return new OperationalSummary(
+            total_orders: $data['total_orders'],
+            total_paid: $data['total_paid'],
+            outstanding: $data['outstanding'],
+            waiting_verification: $data['waiting_verification'],
+            total_tickets: $data['total_tickets'],
         );
     }
 }

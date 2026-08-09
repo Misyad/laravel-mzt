@@ -4,16 +4,18 @@ namespace App\Http\Controllers;
 
 use App\Contracts\DashboardServiceInterface;
 use App\DTO\DashboardFilter;
+use App\Http\Resources\Dashboard\OperationalSummaryResource;
 use App\Http\Resources\Dashboard\OverviewResource;
 use App\Http\Resources\Dashboard\PaymentSummaryResource;
 use App\Http\Resources\Dashboard\RegistrationSummaryResource;
 use App\Http\Resources\Dashboard\RevenueSummaryResource;
+use App\Http\Resources\Dashboard\TicketSummaryResource;
 use App\Support\Dashboard;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 
 /**
- * Finance Dashboard API (Sprint 5A).
+ * Finance Dashboard API (Sprint 5A / 5B.1).
  *
  * Thin controller (read-only): maps the Request into a DashboardFilter DTO,
  * enforces module-level dashboard authorization via Gate, calls the
@@ -25,6 +27,8 @@ use Illuminate\Support\Facades\Gate;
  *  - GET /dashboard/finance/registration  (viewOverview)
  *  - GET /dashboard/finance/revenue       (viewRevenue)
  *  - GET /dashboard/finance/payments      (viewPayment)
+ *  - GET /dashboard/finance/tickets       (viewTickets)  [5B.1]
+ *  - GET /dashboard/finance/operational   (viewOperational)  [5B.1]
  */
 class DashboardController extends Controller
 {
@@ -70,6 +74,26 @@ class DashboardController extends Controller
         return response()->json([
             'success' => true,
             'data' => new PaymentSummaryResource($this->dashboard->paymentSummary($this->map($request))),
+        ]);
+    }
+
+    public function tickets(Request $request)
+    {
+        $this->authorizeDashboard($request, 'viewTickets');
+
+        return response()->json([
+            'success' => true,
+            'data' => new TicketSummaryResource($this->dashboard->ticketSummary($this->map($request))),
+        ]);
+    }
+
+    public function operational(Request $request)
+    {
+        $this->authorizeDashboard($request, 'viewOperational');
+
+        return response()->json([
+            'success' => true,
+            'data' => new OperationalSummaryResource($this->dashboard->operationalSummary($this->map($request))),
         ]);
     }
 

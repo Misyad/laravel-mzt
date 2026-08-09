@@ -165,4 +165,76 @@ class DashboardQuery
             'waiting_verification' => $waiting,
         ];
     }
+
+    /**
+     * Ticket monitoring grouped by the canonical ADR-011 ticket status
+     * (Sprint 5B.1). Groups directly on the stored `tickets.status` column —
+     * no new status mapping is introduced (FR-01).
+     *
+     * @return array{total_tickets: int, by_status: array<int, array{status: string, count: int}>}
+     */
+    public function tickets(?string $start = null, ?string $end = null): array
+    {
+        $query = Ticket::query()
+            ->when($start, fn ($q) => $q->whereDate('created_at', '>=', $start))
+            ->when($end, fn ($q) => $q->whereDate('created_at', '<=', $end));
+
+        $totalTickets = (int) (clone $query)->count('id');
+
+        $byStatus = (clone $query)
+            ->select('status', DB::raw('COUNT(*) as count'))
+            ->groupBy('status')
+            ->orderBy('status')
+            ->get()
+            ->map(fn ($r) => ['status' => $r->status, 'count' => (int) $r->count])
+            ->all();
+
+        return [
+            'total_tickets' => $totalTickets,
+            'by_status' => $byStatus,
+        ];
+    }
+
+    /**
+     * Cross-entity operational summary (Sprint 5B.1): orders, paid amounts,
+     * outstanding, pending verifications and total tickets in a single pass
+     * over Orders / Payments / Tickets (no N+1, FR-02).
+     *
+     * @return array{
+     *   total_orders: int,
+     *   total_paid: float,
+     *   outstanding: float,
+     *   waiting_verification: int,
+     *   total_tickets: int
+     * }
+     */
+    public function operational(?string $start = null, ?string $end = null): array
+    {
+        $orders = $this->orderQuery($start, $end);
+        $payments = $this->paymentQuery($start, $end);
+
+        $totalOrders = (int) (clone $orders)->count('id');
+        $totalRevenue = (float) (clone $orders)->sum('total_amount');
+
+        $totalPaid = (float) (clone $payments)
+            ->where('status', PaymentStatus::PAID->value)
+            ->sum('amount');
+
+        $waitingVerifications = (int) (clone $payments)
+            ->where('status', PaymentStatus::WAITING_VERIFICATION->value)
+            ->count('id');
+
+        $totalTickets = (int) Ticket::query()
+            ->when($start, fn ($q) => $q->whereDate('created_at', '>=', $start))
+            ->when($end, fn ($q) => $q->whereDate('created_at', '<=', $end))
+            ->count('id');
+
+        return [
+            'total_orders' => $totalOrders,
+            'total_paid' => round($totalPaid, 2),
+            'outstanding' => round(max($totalRevenue - $totalPaid, 0), 2),
+            'waiting_verification' => $waitingVerifications,
+            'total_tickets' => $totalTickets,
+        ];
+    }
 }
