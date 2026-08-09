@@ -5,11 +5,12 @@
 | Item | Detail |
 |------|--------|
 | **Sprint** | 5B.1 — Ticket & Operational Monitoring |
-| **Status** | **PASS** (implementasi + regression + performance gate) |
+| **Status** | **PASS** (implementasi + regression + performance gate) + **PRODUCTION VERIFIED** |
 | **Commit Backend** | `b173e91` (`feat(sprint5b): ticket & operational monitoring endpoints ...`) |
 | **Commit Frontend** | `f74164a` (`feat(sprint5b): ticket & operational monitoring page ...`) |
 | **Branch** | `main` (pushed → GitHub `Misyad/laravel-mzt` & `Misyad/maziltu-design-studio`) |
 | **Jenkins** | `mzt-deploy` — auto-trigger via push webhook (lihat §7) |
+| **Production Smoke** | PASS (lihat §10) — endpoint 5B.1 + regression 5A + authorization + no 500 |
 
 ---
 
@@ -126,10 +127,14 @@ single-pass (COUNT/SUM/groupBy), tanpa N+1.
 ## 7. Jenkins Build Status
 
 - **Job**: `mzt-deploy` (jenkins.projecthasan.com:8084, Dockerhost 192.168.1.60).
-- Mesin dev ini **tidak dapat menjangkau host Jenkins** maupun deployment host
-  (di luar jaringan/VPN). Build umumnya auto-trigger via webhook push pada `main`.
-- **Action**: konfirmasi build berikutnya (setelah push `b173e91`/`f74164a`)
-  berstatus **SUCCESS** sebelum lanjut ke Sprint 5B.2.
+- **Build**: SUCCESS (auto-trigger via push webhook pada `main`).
+  - Backend sync: `443233f..b173e91` (`git rev-parse --short HEAD` = `b173e91`).
+  - Frontend checkout: `f74164a` (revision `f74164ab4525567d17b6d7f1bba46e74d18f86e9`).
+  - Migration: `Nothing to migrate.` — PASS.
+  - Schema verification: audit columns + Phase 2A columns — PASS.
+  - Health check: `GET /api/public/stats` -> `HTTP 200`, body
+    `{"success":true,"data":{"event":4,"event_selesai":4,"event_mendatang":0,"total_anggota":950}}`.
+  - Semua container `mzt-backend-1`, `mzt-frontend-1`, `mzt-worker-1`, `mzt-caddy-1`, `mzt-db-1` (healthy) = **Up**.
 
 ---
 
@@ -146,5 +151,78 @@ single-pass (COUNT/SUM/groupBy), tanpa N+1.
 
 Sprint 5B.1 telah **lolos semua** kriteria: implementasi lengkap (backend +
 frontend), regression (authorization / empty / large dataset / canonical status)
-PASS, performance gate PASS, self-review PASS. **Siap untuk lanjut ke Sprint 5B.2**
-(data analytics) setelah deploy Jenkins terkonfirmasi.
+PASS, performance gate PASS, self-review PASS, **production smoke test PASS**.
+**Sprint 5B.1 PRODUCTION VERIFIED.** Siap untuk lanjut ke Sprint 5B.2 (data
+analytics) setelah persetujuan.
+
+---
+
+## 10. Production Smoke Test — Evidence
+
+Diakses dari Dockerhost (LXC 104) melalui Tailscale `pve` -> `pct exec 104`,
+hit Caddy `http://localhost:3015`. Token Sanctum dibuat sementara via container
+`mzt-backend-1` (bootstrap Laravel) untuk user staff (`dashboard`), non-staff
+(`profil`), dan verifier temp (`finance`, user ID 1165), lalu **dihapus seluruhnya
+setelah pengujian — ZERO ARTIFACTS** (SMOKE_TOKENS=0, SMOKE_USERS=0,
+VERIFIER_ROLES_LEFT=0, TEMP_FILES_LEFT=0).
+
+### 10.1 Unauthenticated (expect 401)
+
+| Endpoint | HTTP |
+|----------|------|
+| `GET /api/dashboard/finance/tickets` | 401 |
+| `GET /api/dashboard/finance/operational` | 401 |
+| `GET /api/dashboard/finance/overview` | 401 |
+| `GET /api/dashboard/finance/registration` | 401 |
+| `GET /api/dashboard/finance/revenue` | 401 |
+| `GET /api/dashboard/finance/payments` | 401 |
+
+### 10.2 Staff role (`dashboard`) — expect 200 + success:true
+
+| Endpoint | HTTP | Body |
+|----------|------|------|
+| `tickets` | 200 | `{"success":true,"data":{"total_tickets":0,"by_status":[]}}` |
+| `operational` | 200 | `{"success":true,"data":{"total_orders":0,"total_paid":0,"outstanding":0,"waiting_verification":0,"total_tickets":0}}` |
+| `overview` | 200 | `{"success":true,"data":{"total_orders":0,...}}` |
+| `registration` | 200 | `{"success":true,"data":{"total_orders":0,"by_status":[]}}` |
+| `revenue` | 403 | verifier-only (`viewRevenue` = canVerify) — sesuai Role Matrix §13 |
+| `payments` | 403 | verifier-only (`viewPayment` = canVerify) — sesuai Role Matrix §13 |
+
+### 10.3 Non-staff role (`profil`) — expect 403
+
+| Endpoint | HTTP |
+|----------|------|
+| `tickets` | 403 |
+| `operational` | 403 |
+| `overview` | 403 |
+| `registration` | 403 |
+| `revenue` | 403 |
+| `payments` | 403 |
+
+### 10.4 Verifier role (temp `finance`, user 1165) — expect 200 + success:true
+
+| Endpoint | HTTP | Body |
+|----------|------|------|
+| `revenue` | 200 | `{"success":true,"data":{"total_revenue":0,"total_paid":0,"outstanding":0,"by_status":[]}}` |
+| `payments` | 200 | `{"success":true,"data":{"by_status":[],"waiting_verification":0}}` |
+| `tickets` | 200 | success:true |
+| `operational` | 200 | success:true |
+
+### 10.5 Public health
+
+| Endpoint | HTTP | Body |
+|----------|------|------|
+| `GET /api/public/stats` | 200 | `{"success":true,"data":{"event":4,"event_selesai":4,"event_mendatang":0,"total_anggota":950}}` |
+
+### 10.6 Kesimpulan Smoke
+
+- Semua endpoint mengembalikan HTTP status yang benar (401/403/200).
+- `success:true` hadir pada semua respons yang diizinkan.
+- Struktur JSON sesuai Resource (TicketSummaryResource / OperationalSummaryResource).
+- **Tidak ada HTTP 500** pada semua probe.
+- Empty dataset production: semua agregat bernilai 0, tidak ada error (perilaku
+  empty-state benar).
+- Authorization production sesuai Role Matrix §13: 5B.1 endpoints (staff) &
+  analytics/verifier-only revenue/payments (finance/ketua/admin).
+- ZERO ARTIFACTS setelah pengujian (token sementara + user verifier temp dihapus).
+
