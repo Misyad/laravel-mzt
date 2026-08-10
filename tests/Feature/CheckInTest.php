@@ -154,7 +154,7 @@ class CheckInTest extends TestCase
             $table->integer('id_anggota');
             $table->timestamp('id_user')->nullable();
             $table->timestamp('tanggal_kehadiran')->nullable();
-            $table->time('jam_kehadiran')->nullable();
+            $table->timestamp('jam_kehadiran')->nullable();
             $table->unsignedBigInteger('id_ticket')->nullable();
             $table->string('gate', 100)->nullable();
             $table->dateTime('scanned_at')->nullable();

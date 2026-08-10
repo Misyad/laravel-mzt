@@ -95,7 +95,7 @@ class CheckInService
                 'id_tanggal' => $idTanggal,
                 'id_anggota' => $order->id_anggota,
                 'tanggal_kehadiran' => $scannedAt,
-                'jam_kehadiran' => $scannedAt->format('H:i:s'),
+                'jam_kehadiran' => $scannedAt->format('Y-m-d H:i:s'),
                 'id_ticket' => $ticket->id,
                 'gate' => $gate,
                 'scanned_at' => $scannedAt,
