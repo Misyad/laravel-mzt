@@ -7,6 +7,7 @@ use App\Http\Controllers\admin\C_transaksi;
 use App\Http\Controllers\CheckInController;
 use App\Http\Controllers\CommunicationController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\OperationalController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\TicketController;
 
@@ -127,6 +128,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Transactions
     Route::get('/transactions/{eventId}', [ApiController::class, 'transactionsIndex']);
+
+    // Phase 2D — EMS Operational Management (read-only)
+    Route::get('/dashboard/operations/events', [OperationalController::class, 'events']);
+    Route::get('/dashboard/operations/events/{event}/attendees', [OperationalController::class, 'attendees']);
+    Route::get('/dashboard/operations/events/{event}/attendance', [OperationalController::class, 'attendance']);
+    Route::get('/dashboard/operations/events/{event}/gates', [OperationalController::class, 'gates']);
 
     // Content
     Route::get('/carousel', [ApiController::class, 'carouselIndex']);

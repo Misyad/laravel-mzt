@@ -150,11 +150,11 @@ class CheckInTest extends TestCase
         Schema::create('prisensi_kehadiran', function ($table) {
             $table->id();
             $table->integer('id_event');
-            $table->integer('id_tanggal');
-            $table->integer('id_anggota');
-            $table->timestamp('id_user')->nullable();
-            $table->timestamp('tanggal_kehadiran')->nullable();
-            $table->timestamp('jam_kehadiran')->nullable();
+            $table->bigInteger('id_tanggal')->nullable();
+            $table->string('id_anggota')->default('');
+            $table->bigInteger('id_user')->default(0);
+            $table->timestamp('tanggal_kehadiran')->nullable()->useCurrent();
+            $table->timestamp('jam_kehadiran')->useCurrent();
             $table->unsignedBigInteger('id_ticket')->nullable();
             $table->string('gate', 100)->nullable();
             $table->dateTime('scanned_at')->nullable();

@@ -44,4 +44,22 @@ class DashboardPolicy
     {
         return RoleGuard::isStaff($user);
     }
+
+    /**
+     * Legacy attendance list (ApiController::attendanceIndex) — any back-office
+     * staff may read the (PII-bearing) attendance list. Alumni / other roles 403.
+     */
+    public function viewAttendance(User $user): bool
+    {
+        return RoleGuard::isStaff($user);
+    }
+
+    /**
+     * Legacy financial transactions (ApiController::transactionsIndex) —
+     * verifier-only (finance/ketua/admin). Closed to other roles.
+     */
+    public function viewTransactions(User $user): bool
+    {
+        return RoleGuard::canVerify($user);
+    }
 }

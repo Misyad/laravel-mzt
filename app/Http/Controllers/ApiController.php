@@ -26,6 +26,8 @@ use App\Services\EventCapacityService;
 use Carbon\Carbon;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
+use App\Support\Dashboard;
 
 class ApiController extends Controller
 {
@@ -1062,8 +1064,10 @@ class ApiController extends Controller
     /**
      * ATTENDANCE ENDPOINTS
      */
-    public function attendanceIndex($eventId, $tanggalId)
+    public function attendanceIndex(Request $request, $eventId, $tanggalId)
     {
+        Gate::forUser($request->user())->authorize('viewAttendance', Dashboard::class);
+
         $attendance = Prisensi_kehadiran::where('id_event', $eventId)
             ->where('id_tanggal', $tanggalId)
             ->with('dataUser:id,id_anggota,name')
@@ -1138,8 +1142,10 @@ class ApiController extends Controller
     /**
      * TRANSACTIONS ENDPOINTS
      */
-    public function transactionsIndex($eventId)
+    public function transactionsIndex(Request $request, $eventId)
     {
+        Gate::forUser($request->user())->authorize('viewTransactions', Dashboard::class);
+
         $transactions = Transaksi_event::where('id_event', $eventId)
             ->with('dataUser:id,id_anggota,name')
             ->get()

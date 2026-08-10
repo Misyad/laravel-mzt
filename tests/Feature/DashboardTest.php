@@ -376,6 +376,85 @@ class DashboardTest extends TestCase
     }
 
     /**
+     * MIN-01 sentinel: the event_id/status query params must actually change
+     * what the dashboard reads. Regression guard for the filter propagation
+     * from DashboardFilter -> DashboardService -> DashboardQuery.
+     */
+    public function test_event_and_status_filters_change_results(): void
+    {
+        $paid = Order::create([
+            'uuid' => (string) \Illuminate\Support\Str::uuid(),
+            'nomor_order' => 'MZT-FLT-0001',
+            'id_event' => 1,
+            'id_anggota' => '1',
+            'event_name' => 'Event A',
+            'event_price' => 100_000,
+            'event_start_at' => '2026-08-01',
+            'total_amount' => 100_000,
+            'status_registrasi' => 'confirmed',
+            'payment_status' => 'paid',
+        ]);
+        Order::create([
+            'uuid' => (string) \Illuminate\Support\Str::uuid(),
+            'nomor_order' => 'MZT-FLT-0002',
+            'id_event' => 1,
+            'id_anggota' => '2',
+            'event_name' => 'Event A',
+            'event_price' => 100_000,
+            'event_start_at' => '2026-08-01',
+            'total_amount' => 100_000,
+            'status_registrasi' => 'draft',
+            'payment_status' => 'pending',
+        ]);
+        Order::create([
+            'uuid' => (string) \Illuminate\Support\Str::uuid(),
+            'nomor_order' => 'MZT-FLT-0003',
+            'id_event' => 2,
+            'id_anggota' => '3',
+            'event_name' => 'Event B',
+            'event_price' => 100_000,
+            'event_start_at' => '2026-08-01',
+            'total_amount' => 100_000,
+            'status_registrasi' => 'confirmed',
+            'payment_status' => 'paid',
+        ]);
+
+        Payment::create([
+            'uuid' => (string) \Illuminate\Support\Str::uuid(),
+            'nomor_payment' => 'PAY-FLT-0001',
+            'id_order' => $paid->id,
+            'method' => 'transfer',
+            'amount' => 100_000,
+            'status' => 'paid',
+            'paid_at' => now(),
+        ]);
+
+        $staff = $this->makeUser('finance');
+        Sanctum::actingAs($staff);
+
+        // Unfiltered baseline.
+        $this->getJson('/api/dashboard/finance/overview')
+            ->assertStatus(200)
+            ->assertJsonPath('data.total_orders', 3);
+
+        // event_id=1 reduces the read set.
+        $this->getJson('/api/dashboard/finance/overview?event_id=1')
+            ->assertStatus(200)
+            ->assertJsonPath('data.total_orders', 2)
+            ->assertJsonPath('data.total_revenue', 200_000);
+
+        // status filter also narrows the revenue read.
+        $this->getJson('/api/dashboard/finance/revenue?status=paid')
+            ->assertStatus(200)
+            ->assertJsonPath('data.total_paid', 100_000);
+
+        // Registration, gated by status_registrasi.
+        $this->getJson('/api/dashboard/finance/registration?status=confirmed')
+            ->assertStatus(200)
+            ->assertJsonPath('data.total_orders', 2);
+    }
+
+    /**
      * @group performance
      */
     public function test_ticket_and_operational_large_dataset_meet_performance_gate(): void

@@ -16,6 +16,21 @@ class DashboardFilter
         public readonly ?string $end = null,
         public readonly ?int $eventId = null,
         public readonly ?string $status = null,
+        public readonly ?int $tanggalId = null,
     ) {
+    }
+
+    /**
+     * Return a copy of this filter with the event id replaced.
+     */
+    public function withEvent(?int $eventId): self
+    {
+        return new self(
+            start: $this->start,
+            end: $this->end,
+            eventId: $eventId,
+            status: $this->status,
+            tanggalId: $this->tanggalId,
+        );
     }
 }

@@ -2,9 +2,12 @@
 
 namespace App\Queries;
 
+use App\DTO\ParticipantFilter;
 use App\Enums\PaymentStatus;
+use App\Models\Event;
 use App\Models\Order;
 use App\Models\Payment;
+use App\Models\Prisensi_kehadiran;
 use App\Models\Ticket;
 use Illuminate\Support\Facades\DB;
 
@@ -21,18 +24,30 @@ use Illuminate\Support\Facades\DB;
  */
 class DashboardQuery
 {
-    private function orderQuery(?string $start, ?string $end)
+    private function orderQuery(?string $start, ?string $end, ?int $eventId = null)
     {
         return Order::query()
             ->when($start, fn ($q) => $q->whereDate('created_at', '>=', $start))
-            ->when($end, fn ($q) => $q->whereDate('created_at', '<=', $end));
+            ->when($end, fn ($q) => $q->whereDate('created_at', '<=', $end))
+            ->when($eventId, fn ($q) => $q->where('id_event', $eventId));
     }
 
-    private function paymentQuery(?string $start, ?string $end)
+    private function paymentQuery(?string $start, ?string $end, ?int $eventId = null, ?string $status = null)
     {
         return Payment::query()
             ->when($start, fn ($q) => $q->whereDate('created_at', '>=', $start))
-            ->when($end, fn ($q) => $q->whereDate('created_at', '<=', $end));
+            ->when($end, fn ($q) => $q->whereDate('created_at', '<=', $end))
+            ->when($eventId, fn ($q) => $q->whereHas('order', fn ($o) => $o->where('id_event', $eventId)))
+            ->when($status, fn ($q) => $q->where('status', $status));
+    }
+
+    private function ticketQuery(?string $start, ?string $end, ?int $eventId = null, ?string $status = null)
+    {
+        return Ticket::query()
+            ->when($start, fn ($q) => $q->whereDate('created_at', '>=', $start))
+            ->when($end, fn ($q) => $q->whereDate('created_at', '<=', $end))
+            ->when($eventId, fn ($q) => $q->whereHas('order', fn ($o) => $o->where('id_event', $eventId)))
+            ->when($status, fn ($q) => $q->where('status', $status));
     }
 
     /**
@@ -47,10 +62,11 @@ class DashboardQuery
      *   pending_verifications: int
      * }
      */
-    public function overview(?string $start = null, ?string $end = null): array
+    public function overview(?string $start = null, ?string $end = null, ?int $eventId = null, ?string $status = null): array
     {
-        $orders = $this->orderQuery($start, $end);
-        $payments = $this->paymentQuery($start, $end);
+        $orders = $this->orderQuery($start, $end, $eventId);
+        $payments = $this->paymentQuery($start, $end, $eventId, $status);
+        $tickets = $this->ticketQuery($start, $end, $eventId, $status);
 
         $totalOrders = (int) (clone $orders)->count('id');
         $totalRevenue = (float) (clone $orders)->sum('total_amount');
@@ -63,10 +79,7 @@ class DashboardQuery
             ->where('status', PaymentStatus::WAITING_VERIFICATION->value)
             ->count('id');
 
-        $totalTickets = (int) Ticket::query()
-            ->when($start, fn ($q) => $q->whereDate('created_at', '>=', $start))
-            ->when($end, fn ($q) => $q->whereDate('created_at', '<=', $end))
-            ->count('id');
+        $totalTickets = (int) (clone $tickets)->count('id');
 
         return [
             'total_orders' => $totalOrders,
@@ -83,9 +96,10 @@ class DashboardQuery
      *
      * @return array{total_orders: int, by_status: array<int, array{status: string, count: int}>}
      */
-    public function registration(?string $start = null, ?string $end = null): array
+    public function registration(?string $start = null, ?string $end = null, ?int $eventId = null, ?string $status = null): array
     {
-        $query = $this->orderQuery($start, $end);
+        $query = $this->orderQuery($start, $end, $eventId)
+            ->when($status, fn ($q) => $q->where('status_registrasi', $status));
 
         $totalOrders = (int) (clone $query)->count('id');
 
@@ -173,11 +187,9 @@ class DashboardQuery
      *
      * @return array{total_tickets: int, by_status: array<int, array{status: string, count: int}>}
      */
-    public function tickets(?string $start = null, ?string $end = null): array
+    public function tickets(?string $start = null, ?string $end = null, ?int $eventId = null, ?string $status = null): array
     {
-        $query = Ticket::query()
-            ->when($start, fn ($q) => $q->whereDate('created_at', '>=', $start))
-            ->when($end, fn ($q) => $q->whereDate('created_at', '<=', $end));
+        $query = $this->ticketQuery($start, $end, $eventId, $status);
 
         $totalTickets = (int) (clone $query)->count('id');
 
@@ -208,10 +220,10 @@ class DashboardQuery
      *   total_tickets: int
      * }
      */
-    public function operational(?string $start = null, ?string $end = null): array
+    public function operational(?string $start = null, ?string $end = null, ?int $eventId = null, ?string $status = null): array
     {
-        $orders = $this->orderQuery($start, $end);
-        $payments = $this->paymentQuery($start, $end);
+        $orders = $this->orderQuery($start, $end, $eventId);
+        $payments = $this->paymentQuery($start, $end, $eventId, $status);
 
         $totalOrders = (int) (clone $orders)->count('id');
         $totalRevenue = (float) (clone $orders)->sum('total_amount');
@@ -224,10 +236,7 @@ class DashboardQuery
             ->where('status', PaymentStatus::WAITING_VERIFICATION->value)
             ->count('id');
 
-        $totalTickets = (int) Ticket::query()
-            ->when($start, fn ($q) => $q->whereDate('created_at', '>=', $start))
-            ->when($end, fn ($q) => $q->whereDate('created_at', '<=', $end))
-            ->count('id');
+        $totalTickets = (int) (clone $this->ticketQuery($start, $end, $eventId, $status))->count('id');
 
         return [
             'total_orders' => $totalOrders,
@@ -235,6 +244,221 @@ class DashboardQuery
             'outstanding' => round(max($totalRevenue - $totalPaid, 0), 2),
             'waiting_verification' => $waitingVerifications,
             'total_tickets' => $totalTickets,
+        ];
+    }
+
+    /**
+     * Event-day operations overview (Phase 2D): one aggregate row per event.
+     *
+     * Present count is strictly `prisensi_kehadiran.id_ticket IS NOT NULL`
+     * (Phase 2C QR-scan rows); legacy (`id_ticket IS NULL`) is counted
+     * separately and labelled, never merged.
+     *
+     * @return list<array{
+     *   id_event: int,
+     *   judul_event: string,
+     *   tanggal_start: string|null,
+     *   lokasi: string|null,
+     *   kuota: int|null,
+     *   present_count: int,
+     *   legacy_count: int,
+     *   gate_count: int,
+     *   latest_tgl: string|null
+     * }>
+     */
+    public function operationalEvents(?string $start = null, ?string $end = null, ?int $eventId = null): array
+    {
+        $events = Event::query()
+            ->when($start, fn ($q) => $q->whereDate('tanggal_mulai', '>=', $start))
+            ->when($end, fn ($q) => $q->whereDate('tanggal_mulai', '<=', $end))
+            ->when($eventId, fn ($q) => $q->where('id', $eventId))
+            ->get(['id', 'judul_event', 'tanggal_mulai', 'lokasi', 'kuota']);
+
+        if ($events->isEmpty()) {
+            return [];
+        }
+
+        $ids = $events->pluck('id')->all();
+
+        $agg = Prisensi_kehadiran::query()
+            ->selectRaw('id_event')
+            ->selectRaw('SUM(CASE WHEN id_ticket IS NOT NULL THEN 1 ELSE 0 END) as present_count')
+            ->selectRaw('SUM(CASE WHEN id_ticket IS NULL THEN 1 ELSE 0 END) as legacy_count')
+            ->selectRaw('COUNT(DISTINCT gate) as gate_count')
+            ->selectRaw('MAX(tanggal_kehadiran) as latest_tgl')
+            ->whereIn('id_event', $ids)
+            ->groupBy('id_event')
+            ->get()
+            ->keyBy('id_event');
+
+        return $events->map(fn ($e) => [
+            'id_event' => (int) $e->id,
+            'judul_event' => (string) $e->judul_event,
+            'tanggal_start' => $e->tanggal_mulai !== null ? (string) $e->tanggal_mulai : null,
+            'lokasi' => $e->lokasi,
+            'kuota' => $e->kuota !== null ? (int) $e->kuota : null,
+            'present_count' => (int) ($agg[$e->id]->present_count ?? 0),
+            'legacy_count' => (int) ($agg[$e->id]->legacy_count ?? 0),
+            'gate_count' => (int) ($agg[$e->id]->gate_count ?? 0),
+            'latest_tgl' => isset($agg[$e->id]) && $agg[$e->id]->latest_tgl !== null
+                ? (string) $agg[$e->id]->latest_tgl
+                : null,
+        ])->all();
+    }
+
+    /**
+     * Paginated participant list for one event (Phase 2D).
+     *
+     * `Prisensi_kehadiran` rows are left-joined to `users` on `id_anggota`
+     * (varchar, matching production collation) to resolve member names. Rows
+     * without a matching account are kept and flagged `orphan`, never dropped.
+     * Source split: `phase2c` (`id_ticket IS NOT NULL`) vs `legacy`. Ticket status
+     * is resolved in the same query via a left join to `tickets` (no N+1).
+     *
+     * @return array{rows: list<array>, total: int}
+     */
+    public function participants(ParticipantFilter $filter): array
+    {
+        $query = Prisensi_kehadiran::query()
+            ->leftJoin('users', 'users.id_anggota', '=', 'prisensi_kehadiran.id_anggota')
+            ->leftJoin('tickets', 'tickets.id', '=', 'prisensi_kehadiran.id_ticket')
+            ->where('prisensi_kehadiran.id_event', $filter->eventId)
+            ->when($filter->tanggalId, fn ($q) => $q->where('prisensi_kehadiran.id_tanggal', $filter->tanggalId))
+            ->when($filter->gate, fn ($q) => $q->where('prisensi_kehadiran.gate', $filter->gate))
+            ->when($filter->q, fn ($q) => $q->where(function ($w) use ($filter) {
+                $w->where('prisensi_kehadiran.id_anggota', 'like', '%'.$filter->q.'%')
+                    ->orWhere('users.name', 'like', '%'.$filter->q.'%');
+            }));
+
+        $total = (int) (clone $query)->count('prisensi_kehadiran.id');
+
+        $rows = (clone $query)
+            ->select([
+                'prisensi_kehadiran.id',
+                'prisensi_kehadiran.id_event',
+                'prisensi_kehadiran.id_tanggal',
+                'prisensi_kehadiran.id_anggota',
+                'prisensi_kehadiran.id_ticket',
+                'prisensi_kehadiran.gate',
+                'prisensi_kehadiran.scanned_at',
+                'users.id as user_id',
+                'users.name as nama',
+                'tickets.status as ticket_status',
+            ])
+            ->orderByDesc('prisensi_kehadiran.id')
+            ->offset($filter->offset())
+            ->limit($filter->perPage)
+            ->get()
+            ->map(fn ($row) => [
+                'id' => (int) $row->id,
+                'id_event' => (int) $row->id_event,
+                'id_tanggal' => $row->id_tanggal !== null ? (int) $row->id_tanggal : null,
+                'id_anggota' => (string) $row->id_anggota,
+                'nama' => $row->nama,
+                'source' => $row->id_ticket !== null ? 'phase2c' : 'legacy',
+                'account_status' => $row->user_id !== null ? 'normal' : 'orphan',
+                'ticket_status' => $row->ticket_status,
+                'gate' => $row->gate,
+                'scanned_at' => $row->scanned_at ? (string) $row->scanned_at : null,
+            ])
+            ->all();
+
+        return ['rows' => $rows, 'total' => $total];
+    }
+
+    /**
+     * Attendance summary for an event/day (Phase 2D).
+     *
+     * Present = `prisensi_kehadiran.id_ticket IS NOT NULL`; legacy counted
+     * separately. `per_tanggal` groups the same split by `id_tanggal`.
+     *
+     * @return array{
+     *   event_id: int,
+     *   tanggal_id: int|null,
+     *   present: int,
+     *   legacy_count: int,
+     *   total: int,
+     *   per_tanggal: list<array{tanggal_id: int|null, present: int, legacy_count: int}>
+     * }
+     */
+    public function attendanceSummary(?int $eventId = null, ?int $tanggalId = null): array
+    {
+        $base = Prisensi_kehadiran::query()
+            ->where('id_event', $eventId)
+            ->when($tanggalId, fn ($q) => $q->where('id_tanggal', $tanggalId));
+
+        $present = (int) (clone $base)->whereNotNull('id_ticket')->count('id');
+        $legacyCount = (int) (clone $base)->whereNull('id_ticket')->count('id');
+
+        $perTanggal = Prisensi_kehadiran::query()
+            ->where('id_event', $eventId)
+            ->when($tanggalId, fn ($q) => $q->where('id_tanggal', $tanggalId))
+            ->selectRaw('id_tanggal')
+            ->selectRaw('SUM(CASE WHEN id_ticket IS NOT NULL THEN 1 ELSE 0 END) as present')
+            ->selectRaw('SUM(CASE WHEN id_ticket IS NULL THEN 1 ELSE 0 END) as legacy_count')
+            ->groupBy('id_tanggal')
+            ->orderBy('id_tanggal')
+            ->get()
+            ->map(fn ($r) => [
+                'tanggal_id' => $r->id_tanggal !== null ? (int) $r->id_tanggal : null,
+                'present' => (int) $r->present,
+                'legacy_count' => (int) $r->legacy_count,
+            ])
+            ->all();
+
+        return [
+            'event_id' => (int) $eventId,
+            'tanggal_id' => $tanggalId,
+            'present' => $present,
+            'legacy_count' => $legacyCount,
+            'total' => $present + $legacyCount,
+            'per_tanggal' => $perTanggal,
+        ];
+    }
+
+    /**
+     * Gate monitoring for an event/day (Phase 2D).
+     *
+     * Groups `prisensi_kehadiran` by `gate`; rows without a gate value are
+     * grouped under `(ungated)`. Present/legacy split follows the canonical
+     * definition (`id_ticket IS NOT NULL`).
+     *
+     * @return array{
+     *   event_id: int,
+     *   tanggal_id: int|null,
+     *   rows: list<array{gate: string|null, present: int, legacy: int, total: int}>,
+     *   breakdown_per_gate: array<string, array{present: int, legacy: int, total: int}>
+     * }
+     */
+    public function gateMonitoring(?int $eventId = null, ?int $tanggalId = null): array
+    {
+        $rows = Prisensi_kehadiran::query()
+            ->where('id_event', $eventId)
+            ->when($tanggalId, fn ($q) => $q->where('id_tanggal', $tanggalId))
+            ->selectRaw("COALESCE(gate, '(ungated)') as gate")
+            ->selectRaw('SUM(CASE WHEN id_ticket IS NOT NULL THEN 1 ELSE 0 END) as present')
+            ->selectRaw('SUM(CASE WHEN id_ticket IS NULL THEN 1 ELSE 0 END) as legacy_count')
+            ->selectRaw('COUNT(*) as total')
+            ->groupBy('gate')
+            ->orderBy('gate')
+            ->get()
+            ->map(fn ($r) => [
+                'gate' => (string) $r->gate,
+                'present' => (int) $r->present,
+                'legacy' => (int) $r->legacy_count,
+                'total' => (int) $r->total,
+            ])
+            ->all();
+
+        return [
+            'event_id' => (int) $eventId,
+            'tanggal_id' => $tanggalId,
+            'rows' => $rows,
+            'breakdown_per_gate' => collect($rows)->mapWithKeys(
+                static fn (array $r) => $r['gate'] !== null
+                    ? [$r['gate'] => ['present' => $r['present'], 'legacy' => $r['legacy'], 'total' => $r['total']]]
+                    : []
+            )->all(),
         ];
     }
 }
