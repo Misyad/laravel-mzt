@@ -24,6 +24,7 @@ use App\Models\Order;
 use App\Services\RegistrationService;
 use App\Services\EventCapacityService;
 use Carbon\Carbon;
+use Laravel\Sanctum\TransientToken;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
@@ -59,33 +60,62 @@ class ApiController extends Controller
         $user->last_login = now();
         $user->increment('login_count');
 
-        // Create token
-        $token = $user->createToken('api-token')->plainTextToken;
-
         // Get user data
         $userData = DataUser::where('id_users', $user->id)->first();
 
         // Get roles
         $roles = HakAksesRole::where('id_users', $user->id)->pluck('nama_role')->toArray();
 
+        $userPayload = [
+            'id' => $user->id,
+            'id_anggota' => $user->id_anggota,
+            'name' => $user->name,
+            'email' => $user->email,
+            'roles' => $roles,
+            'foto' => $userData ? $userData->foto : null,
+            'must_change_password' => empty($user->password_changed_at),
+        ];
+
+        // First-party browser (Sanctum stateful) request: establish a HttpOnly
+        // session instead of handing out a personal access token.
+        if ($request->attributes->get('sanctum')) {
+            Auth::guard('web')->login($user);
+            $request->session()->regenerate();
+
+            return response()->json([
+                'success' => true,
+                'user' => $userPayload,
+            ]);
+        }
+
+        // Stateless API client (mobile / scripts / integrations): personal
+        // access token. No session is created, so the request stays stateless.
+        $token = $user->createToken('api-token')->plainTextToken;
+
         return response()->json([
             'success' => true,
             'token' => $token,
-            'user' => [
-                'id' => $user->id,
-                'id_anggota' => $user->id_anggota,
-                'name' => $user->name,
-                'email' => $user->email,
-                'roles' => $roles,
-                'foto' => $userData ? $userData->foto : null,
-                'must_change_password' => empty($user->password_changed_at),
-            ],
+            'user' => $userPayload,
         ]);
     }
 
     public function logout(Request $request)
     {
-        $request->user()->currentAccessToken()->delete();
+        // Revoke the presented personal access token (non-browser clients).
+        // Session-authenticated requests carry a TransientToken, which is not a
+        // real database row and must never be "deleted".
+        $token = $request->user()->currentAccessToken();
+        if ($token && ! $token instanceof TransientToken) {
+            $token->delete();
+        }
+
+        // Destroy the web session for first-party browser clients.
+        if (Auth::guard('web')->check()) {
+            Auth::guard('web')->logout();
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
+        }
+
         return response()->json(['success' => true, 'message' => 'Logout berhasil']);
     }
 
