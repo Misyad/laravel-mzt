@@ -362,7 +362,7 @@ class ApiController extends Controller
     {
         Gate::forUser($request->user())->authorize('manageAccounts', MemberManagement::class);
 
-        $members = DataUser::whereDoesNotHave('user')->get();
+        $members = DataUser::whereDoesntHave('user')->get();
 
         $created = 0;
         foreach ($members as $member) {

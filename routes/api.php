@@ -92,6 +92,7 @@ Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
     // Phase 2B — Payment Engine (Sprint 2)
     Route::post('/orders/{uuid}/payment', [PaymentController::class, 'upload'])
         ->middleware('throttle:10,1');
+    Route::get('/payments', [PaymentController::class, 'index']);
     Route::get('/payments/{uuid}', [PaymentController::class, 'show']);
     Route::get('/payments/{uuid}/proof', [PaymentController::class, 'proof']);
     Route::put('/payments/{uuid}/verify', [PaymentController::class, 'verify']);

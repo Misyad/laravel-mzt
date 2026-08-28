@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\PaymentStatus;
 use App\Http\Requests\CreatePaymentRequest;
 use App\Http\Requests\UploadPaymentProofRequest;
 use App\Http\Requests\VerifyPaymentRequest;
@@ -12,6 +13,7 @@ use App\Services\PaymentVerificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Rule;
 
 /**
  * Payment Engine API (PRD §21.6).
@@ -171,6 +173,59 @@ class PaymentController extends Controller
         return $disk->response($proof->file_path, null, [
             'Content-Disposition' => 'inline; filename="' . $proof->original_name . '"',
         ]);
+    }
+
+    /**
+     * Verification queue — paginated, filterable. Verifier only.
+     * Default status = waiting_verification.
+     */
+    public function index(Request $request)
+    {
+        if (! Gate::forUser($request->user())->allows('viewQueue', Payment::class)) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
+        $request->validate([
+            'status' => ['nullable', 'string', Rule::in(PaymentStatus::values())],
+            'event_id' => ['nullable', 'integer', 'exists:events,id'],
+            'date_from' => ['nullable', 'date'],
+            'date_to' => ['nullable', 'date', 'after_or_equal:date_from'],
+            'q' => ['nullable', 'string', 'max:100'],
+            'page' => ['nullable', 'integer', 'min:1'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:50'],
+        ]);
+
+        $status = $request->input('status') ?? PaymentStatus::WAITING_VERIFICATION->value;
+        $eventId = $request->input('event_id');
+        $dateFrom = $request->input('date_from');
+        $dateTo = $request->input('date_to');
+        $q = trim((string) $request->input('q', ''));
+        $perPage = (int) ($request->input('per_page', 15));
+        $perPage = max(1, min(50, $perPage));
+
+        $query = Payment::query()
+            ->with([
+                'order:id,uuid,nomor_order,event_name,event_price,total_amount,id_event,payment_status',
+                'order.event:id,judul_event,slug',
+                'proofs:id,id_payment,file_path,original_name,file_size',
+            ])
+            ->where('status', $status)
+            ->when($eventId, fn ($qq) => $qq->whereHas('order', fn ($oq) => $oq->where('id_event', $eventId)))
+            ->when($dateFrom, fn ($qq) => $qq->whereDate('created_at', '>=', $dateFrom))
+            ->when($dateTo, fn ($qq) => $qq->whereDate('created_at', '<=', $dateTo))
+            ->when($q !== '', function ($qq) use ($q) {
+                $qq->where(function ($w) use ($q) {
+                    $w->where('nomor_payment', 'like', "%{$q}%")
+                        ->orWhere('uuid', 'like', "%{$q}%")
+                        ->orWhereHas('order', fn ($oq) => $oq->where('nomor_order', 'like', "%{$q}%")
+                            ->orWhere('event_name', 'like', "%{$q}%"));
+                });
+            })
+            ->orderByDesc('id');
+
+        $paginator = $query->paginate($perPage);
+
+        return response()->json(['success' => true, 'data' => $paginator]);
     }
 
     /**

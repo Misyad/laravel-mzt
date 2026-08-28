@@ -62,4 +62,13 @@ class PaymentPolicy
     {
         return RoleGuard::canVerify($user);
     }
+
+    /**
+     * Whether the user may view the verification queue (Finance/Admin).
+     * Mirrors verify – same verifier set, read-only listing.
+     */
+    public function viewQueue(User $user): bool
+    {
+        return RoleGuard::canVerify($user);
+    }
 }
