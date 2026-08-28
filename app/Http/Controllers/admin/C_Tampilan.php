@@ -8,6 +8,7 @@ use App\Models\Info_pesantren;
 use Illuminate\Support\Facades\File;
 use App\Models\Tentang_mzt;
 use App\Models\Carosel;
+use App\Support\HtmlSanitizer;
 use DataPicker;
 
 class C_Tampilan extends Controller
@@ -45,9 +46,9 @@ class C_Tampilan extends Controller
 
         Info_pesantren::insert([
             'judul' => $request->judul,
-            'deskripsi' => $request->deskripsi,
-            'alamat' => $request->alamat,
-            'telpon' => $request->no_tlp,
+            'deskripsi' => HtmlSanitizer::sanitize($request->deskripsi),
+            'alamat' => HtmlSanitizer::sanitize($request->alamat),
+            'telpon' => HtmlSanitizer::sanitize($request->no_tlp),
             'email' => $request->email,
             'foto' => $image_path,
         ]);
@@ -71,6 +72,10 @@ class C_Tampilan extends Controller
         ]);
         \DataPicker::activitas_log('edit pesantren');
 
+        $deskripsi = HtmlSanitizer::sanitize($request->deskripsi);
+        $alamat = HtmlSanitizer::sanitize($request->alamat);
+        $telpon = HtmlSanitizer::sanitize($request->no_tlp);
+
         
         if($file_status){
             if (File::exists(public_path('storage/'.$file_lama))) {
@@ -82,9 +87,9 @@ class C_Tampilan extends Controller
 
                 Info_pesantren::where('id',$request->id)->update([
                     'judul' => $request->judul,
-                    'deskripsi' => $request->deskripsi,
-                    'alamat' => $request->alamat,
-                    'telpon' => $request->no_tlp,
+                    'deskripsi' => $deskripsi,
+                    'alamat' => $alamat,
+                    'telpon' => $telpon,
                     'email' => $request->email,
                     'foto' => $image_path,
                 ]);
@@ -112,9 +117,9 @@ class C_Tampilan extends Controller
         }else{
             Info_pesantren::where('id',$request->id)->update([
                 'judul' => $request->judul,
-                'deskripsi' => $request->deskripsi,
-                'alamat' => $request->alamat,
-                'telpon' => $request->no_tlp,
+                'deskripsi' => $deskripsi,
+                'alamat' => $alamat,
+                'telpon' => $telpon,
                 'email' => $request->email,
                 
             ]);
@@ -136,6 +141,11 @@ class C_Tampilan extends Controller
             'foto' => ['image','mimes:jpg,png,jpeg,gif,svg','max:2048'],
         ]);
         \DataPicker::activitas_log('edit mzt');
+
+        $deskripsi = HtmlSanitizer::sanitize($request->deskripsi);
+        $alamat = HtmlSanitizer::sanitize($request->alamat);
+        $telpon = HtmlSanitizer::sanitize($request->no_tlp);
+
         if($file_status){
             if (File::exists(public_path('storage/'.$file_lama))) {
                 File::delete(public_path('storage/'.$file_lama));
@@ -145,9 +155,9 @@ class C_Tampilan extends Controller
                 if($image_path){
                     Tentang_mzt::where('id',$request->id)->update([
                         'judul' => $request->judul,
-                        'deskripsi' => $request->deskripsi,
-                        'alamat' => $request->alamat,
-                        'telpon' => $request->no_tlp,
+                        'deskripsi' => $deskripsi,
+                        'alamat' => $alamat,
+                        'telpon' => $telpon,
                         'email' => $request->email,
                         'foto' => $image_path,
                     ]);
@@ -177,9 +187,9 @@ class C_Tampilan extends Controller
         }else{
             Tentang_mzt::where('id',$request->id)->update([
                 'judul' => $request->judul,
-                'deskripsi' => $request->deskripsi,
-                'alamat' => $request->alamat,
-                'telpon' => $request->no_tlp,
+                'deskripsi' => $deskripsi,
+                'alamat' => $alamat,
+                'telpon' => $telpon,
                 'email' => $request->email,
             ]);
             return response()->json([

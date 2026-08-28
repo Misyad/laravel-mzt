@@ -10,6 +10,7 @@ use App\Models\Tanggal_event;
 use Illuminate\Support\Facades\File;
 use App\Models\Transaksi_event;
 use DateTime;
+use App\Support\HtmlSanitizer;
 
 
 class C_Event extends Controller
@@ -39,6 +40,8 @@ class C_Event extends Controller
 
         \DataPicker::activitas_log('membuat event');
 
+        $deskripsi = HtmlSanitizer::sanitize($request->deskripsi);
+
         $regex = '/\s*-\s*/';
         $dates = preg_split($regex,  $request->tanggal);
         $start_date = trim($dates[0]);
@@ -58,7 +61,7 @@ class C_Event extends Controller
 
                 $id = Event::insertGetId([
                     'judul_event' => $request->judul,
-                    'deskripsi' => $request->deskripsi,
+                    'deskripsi' => $deskripsi,
                     'lokasi' => $request->lokasi,
                     'harga' => $request->harga,
                     'tanggal' => $request->tanggal,
@@ -88,7 +91,7 @@ class C_Event extends Controller
 
                 $id = Event::insertGetId([
                     'judul_event' => $request->judul,
-                    'deskripsi' => $request->deskripsi,
+                    'deskripsi' => $deskripsi,
                     'tanggal' => $request->tanggal,
                     'lokasi' => $request->lokasi,
                     'harga' => $request->harga,
@@ -152,6 +155,8 @@ class C_Event extends Controller
             'banner' => ['image','mimes:jpg,png,jpeg,gif,svg','max:1048'],
         ]);
 
+        $deskripsi = HtmlSanitizer::sanitize($request->deskripsi);
+
         $regex = '/\s*-\s*/';
         $dates = preg_split($regex,  $request->tanggal);
         $start_date = trim($dates[0]);
@@ -173,7 +178,7 @@ class C_Event extends Controller
 
                     Event::where(['id' => $request->id_event])->update([
                         'judul_event' => $request->judul,
-                        'deskripsi' => $request->deskripsi,
+                        'deskripsi' => $deskripsi,
                         'tanggal' => $request->tanggal,
                         'lokasi' => $request->lokasi,
                         'harga' => $request->harga,
@@ -210,7 +215,7 @@ class C_Event extends Controller
 
                         Event::where(['id' => $request->id_event])->update([
                             'judul_event' => $request->judul,
-                            'deskripsi' => $request->deskripsi,
+                            'deskripsi' => $deskripsi,
                             'tanggal' => $request->tanggal,
                             'lokasi' => $request->lokasi,
                             'harga' => $request->harga,
@@ -250,7 +255,7 @@ class C_Event extends Controller
             }else{
                 Event::where(['id' => $request->id_event])->update([
                     'judul_event' => $request->judul,
-                    'deskripsi' => $request->deskripsi,
+                    'deskripsi' => $deskripsi,
                     'tanggal' => $request->tanggal,
                     'lokasi' => $request->lokasi,
                     'harga' => $request->harga,
@@ -291,7 +296,7 @@ class C_Event extends Controller
 
                     Event::where(['id' => $request->id_event])->update([
                         'judul_event' => $request->judul,
-                        'deskripsi' => $request->deskripsi,
+                        'deskripsi' => $deskripsi,
                         'tanggal' => $request->tanggal,
                         'lokasi' => $request->lokasi,
                         'harga' => $request->harga,
@@ -328,7 +333,7 @@ class C_Event extends Controller
 
                         Event::where(['id' => $request->id_event])->update([
                             'judul_event' => $request->judul,
-                            'deskripsi' => $request->deskripsi,
+                            'deskripsi' => $deskripsi,
                             'tanggal' => $request->tanggal,
                             'lokasi' => $request->lokasi,
                             'harga' => $request->harga,
@@ -368,7 +373,7 @@ class C_Event extends Controller
             }else{
                 Event::where(['id' => $request->id_event])->update([
                     'judul_event' => $request->judul,
-                    'deskripsi' => $request->deskripsi,
+                    'deskripsi' => $deskripsi,
                     'tanggal' => $request->tanggal,
                     'lokasi' => $request->lokasi,
                     'harga' => $request->harga,

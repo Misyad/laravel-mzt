@@ -31,6 +31,7 @@ use Illuminate\Support\Facades\Gate;
 use App\Support\Dashboard;
 use App\Support\MemberManagement;
 use App\Support\Content;
+use App\Support\HtmlSanitizer;
 
 class ApiController extends Controller
 {
@@ -361,7 +362,7 @@ class ApiController extends Controller
     {
         Gate::forUser($request->user())->authorize('manageAccounts', MemberManagement::class);
 
-        $members = DataUser::whereDoesntHave('user')->get();
+        $members = DataUser::whereDoesNotHave('user')->get();
 
         $created = 0;
         foreach ($members as $member) {
@@ -449,8 +450,6 @@ class ApiController extends Controller
 
         DataUser::where('id_users', $id)->update(['is_active' => $request->is_active]);
 
-        // C-01: a deactivated account must not keep using already-issued PATs.
-        // Scoped strictly to THIS user ΓÇö unrelated tokens/sessions untouched.
         if ($request->is_active === '0') {
             $user->tokens()->delete();
         }
@@ -842,7 +841,7 @@ class ApiController extends Controller
                 'slug' => $request->slug,
                 'lokasi' => $request->lokasi,
                 'harga' => $request->harga,
-                'deskripsi' => $request->deskripsi,
+                'deskripsi' => HtmlSanitizer::sanitize($request->deskripsi),
                 'banner' => $banner,
                 'tanggal' => $request->tanggal,
                 'tanggal_mulai' => $tanggal_mulai,
@@ -908,7 +907,7 @@ class ApiController extends Controller
                 'slug' => $request->slug,
                 'lokasi' => $request->lokasi,
                 'harga' => $request->harga,
-                'deskripsi' => $request->deskripsi,
+                'deskripsi' => HtmlSanitizer::sanitize($request->deskripsi),
                 'banner' => $banner,
                 'tanggal' => $request->tanggal,
                 'tanggal_mulai' => $tanggal_mulai,
@@ -1059,7 +1058,7 @@ class ApiController extends Controller
             $news = Berita::create([
                 'judul' => $request->judul,
                 'slug' => $request->slug,
-                'deskripsi' => $request->deskripsi,
+                'deskripsi' => HtmlSanitizer::sanitize($request->deskripsi),
                 'foto' => $foto,
                 'is_active' => '1',
             ]);
@@ -1100,7 +1099,7 @@ class ApiController extends Controller
             $news->update([
                 'judul' => $request->judul,
                 'slug' => $request->slug,
-                'deskripsi' => $request->deskripsi,
+                'deskripsi' => HtmlSanitizer::sanitize($request->deskripsi),
                 'foto' => $foto,
             ]);
 
@@ -1293,11 +1292,15 @@ class ApiController extends Controller
             $foto = $request->file('foto')->store('image/pesantren', 'public');
         }
 
+        $deskripsi = HtmlSanitizer::sanitize($request->deskripsi);
+        $alamat = HtmlSanitizer::sanitize($request->alamat);
+        $telpon = HtmlSanitizer::sanitize($request->telpon);
+
         $info->update([
             'judul' => $request->judul,
-            'deskripsi' => $request->deskripsi,
-            'alamat' => $request->alamat,
-            'telpon' => $request->telpon,
+            'deskripsi' => $deskripsi,
+            'alamat' => $alamat,
+            'telpon' => $telpon,
             'email' => $request->email,
             'foto' => $foto,
         ]);
@@ -1338,11 +1341,15 @@ class ApiController extends Controller
             $foto = $request->file('foto')->store('image/mzt', 'public');
         }
 
+        $deskripsi = HtmlSanitizer::sanitize($request->deskripsi);
+        $alamat = HtmlSanitizer::sanitize($request->alamat);
+        $telpon = HtmlSanitizer::sanitize($request->telpon);
+
         $info->update([
             'judul' => $request->judul,
-            'deskripsi' => $request->deskripsi,
-            'alamat' => $request->alamat,
-            'telpon' => $request->telpon,
+            'deskripsi' => $deskripsi,
+            'alamat' => $alamat,
+            'telpon' => $telpon,
             'email' => $request->email,
             'foto' => $foto,
         ]);
@@ -1393,7 +1400,6 @@ class ApiController extends Controller
     public function activityLogIndex(Request $request)
     {
         Gate::forUser($request->user())->authorize('viewAuditLog', Dashboard::class);
-
         $logs = Activitas_log::with('dataUser:id,name')
             ->orderBy('created_at', 'desc')
             ->take(100)

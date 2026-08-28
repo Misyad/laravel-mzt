@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use App\Models\Berita;
 use Illuminate\Support\Facades\File;
 use DataPicker;
+use App\Support\HtmlSanitizer;
 
 class C_Berita extends Controller
 {
@@ -26,13 +27,14 @@ class C_Berita extends Controller
         ]);
 
         \DataPicker::activitas_log('membuat berita');
+        $deskripsi = HtmlSanitizer::sanitize($request->deskripsi);
         $image_path = $request->file('foto')->store('image/berita', 'public');
         $slug = preg_replace('/\s+/', '-', $request->slug);
         $slug_count = Berita::where(['slug' => $slug])->count();
         if($slug_count == 0){
         Berita::insert([
             'judul' => $request->judul,
-            'deskripsi' => $request->deskripsi,
+            'deskripsi' => $deskripsi,
             'slug' => $slug,
             'foto' => $image_path,
             'create_at' => auth()->user()->id_anggota,
@@ -77,6 +79,7 @@ class C_Berita extends Controller
         ]);
 
         \DataPicker::activitas_log('edit berita');
+        $deskripsi = HtmlSanitizer::sanitize($request->deskripsi);
         $file_lama =  $request->foto_lama;
         $file_status = $_FILES["foto"]["name"];
         $slug = preg_replace('/\s+/', '-', $request->slug);
@@ -93,7 +96,7 @@ class C_Berita extends Controller
 
                     Berita::where(['id' => $request->id_berita])->update([
                         'judul' => $request->judul,
-                        'deskripsi' => $request->deskripsi,
+                        'deskripsi' => $deskripsi,
                         'slug' => $slug,
                         'foto' => $image_path,
                         'edit_at' => auth()->user()->id_anggota,
@@ -115,7 +118,7 @@ class C_Berita extends Controller
             }else{
                 Berita::where(['id' => $request->id_berita])->update([
                     'judul' => $request->judul,
-                    'deskripsi' => $request->deskripsi,
+                    'deskripsi' => $deskripsi,
                     'slug' => $slug,
                     'edit_at' => auth()->user()->id_anggota,
                 ]);
@@ -141,7 +144,7 @@ class C_Berita extends Controller
     
                         Berita::where(['id' => $request->id_berita])->update([
                             'judul' => $request->judul,
-                            'deskripsi' => $request->deskripsi,
+                            'deskripsi' => $deskripsi,
                             'slug' => $slug,
                             'foto' => $image_path,
                             'edit_at' => auth()->user()->id_anggota,
@@ -163,7 +166,7 @@ class C_Berita extends Controller
                 }else{
                     Berita::where(['id' => $request->id_berita])->update([
                         'judul' => $request->judul,
-                        'deskripsi' => $request->deskripsi,
+                        'deskripsi' => $deskripsi,
                         'slug' => $slug,
                         'edit_at' => auth()->user()->id_anggota,
                     ]);
