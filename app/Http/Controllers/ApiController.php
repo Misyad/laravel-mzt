@@ -29,6 +29,8 @@ use Illuminate\Support\Str;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use App\Support\Dashboard;
+use App\Support\MemberManagement;
+use App\Support\Content;
 
 class ApiController extends Controller
 {
@@ -305,8 +307,10 @@ class ApiController extends Controller
      * Create a login account for a member that does not have one yet.
      * Idempotent: returns 409 when the account already exists.
      */
-    public function generateAccount($id)
+    public function generateAccount(Request $request, $id)
     {
+        Gate::forUser($request->user())->authorize('manageAccounts', MemberManagement::class);
+
         $member = DataUser::where('id_users', $id)->first();
 
         if (User::where('id', $id)->exists()) {
@@ -355,7 +359,9 @@ class ApiController extends Controller
      */
     public function bulkGenerate(Request $request)
     {
-        $members = DataUser::whereDoesNotHave('user')->get();
+        Gate::forUser($request->user())->authorize('manageAccounts', MemberManagement::class);
+
+        $members = DataUser::whereDoesntHave('user')->get();
 
         $created = 0;
         foreach ($members as $member) {
@@ -401,6 +407,8 @@ class ApiController extends Controller
      */
     public function resetAccount(Request $request, $id)
     {
+        Gate::forUser($request->user())->authorize('manageAccounts', MemberManagement::class);
+
         $user = User::where('id', $id)->first();
         if (! $user) {
             return response()->json(['success' => false, 'message' => 'Akun tidak ditemukan.'], 404);
@@ -426,6 +434,8 @@ class ApiController extends Controller
      */
     public function setAccountStatus(Request $request, $id)
     {
+        Gate::forUser($request->user())->authorize('manageAccounts', MemberManagement::class);
+
         $request->validate([
             'is_active' => 'required|string|in:1,0',
         ]);
@@ -439,6 +449,12 @@ class ApiController extends Controller
 
         DataUser::where('id_users', $id)->update(['is_active' => $request->is_active]);
 
+        // C-01: a deactivated account must not keep using already-issued PATs.
+        // Scoped strictly to THIS user ΓÇö unrelated tokens/sessions untouched.
+        if ($request->is_active === '0') {
+            $user->tokens()->delete();
+        }
+
         return response()->json([
             'success' => true,
             'message' => $request->is_active === '1' ? 'Akun diaktifkan.' : 'Akun dinonaktifkan.',
@@ -448,8 +464,10 @@ class ApiController extends Controller
     /**
      * DASHBOARD ENDPOINTS
      */
-    public function dashboardStats()
+    public function dashboardStats(Request $request)
     {
+        Gate::forUser($request->user())->authorize('viewLegacyDashboards', Dashboard::class);
+
         $event = Event::where('is_active', '1')->count();
         $event_selesai = DB::table('event_status')
             ->where('is_active', '1')
@@ -472,8 +490,9 @@ class ApiController extends Controller
         ]);
     }
 
-    public function dashboardCalendar()
+    public function dashboardCalendar(Request $request)
     {
+        Gate::forUser($request->user())->authorize('viewLegacyDashboards', Dashboard::class);
         $data = DB::table('event_status')->where('is_active', '1')->get();
         $data_array = [];
 
@@ -511,8 +530,9 @@ class ApiController extends Controller
         ]);
     }
 
-    public function dashboardEvents()
+    public function dashboardEvents(Request $request)
     {
+        Gate::forUser($request->user())->authorize('viewLegacyDashboards', Dashboard::class);
         $events = DB::table('event_status')
             ->where('is_active', '1')
             ->orderByRaw("FIELD(status COLLATE utf8mb4_unicode_ci, 'Ongoing', 'Upcomming', 'Complate')")
@@ -527,8 +547,9 @@ class ApiController extends Controller
     /**
      * MEMBERS ENDPOINTS
      */
-    public function membersIndex()
+    public function membersIndex(Request $request)
     {
+        Gate::forUser($request->user())->authorize('viewDirectory', MemberManagement::class);
         $members = DataUser::with('user')->where('is_active', '1')->get();
         $data = $members->map(function ($m) {
             return [
@@ -560,8 +581,10 @@ class ApiController extends Controller
         ]);
     }
 
-    public function membersShow($id)
+    public function membersShow(Request $request, $id)
     {
+        Gate::forUser($request->user())->authorize('viewDirectory', MemberManagement::class);
+
         $member = DataUser::with('user')->where('id_users', $id)->first();
         if (!$member) {
             return response()->json(['success' => false, 'message' => 'Member not found'], 404);
@@ -587,6 +610,8 @@ class ApiController extends Controller
 
     public function membersStore(Request $request)
     {
+        Gate::forUser($request->user())->authorize('writeMember', MemberManagement::class);
+
         $request->validate([
             'nama' => 'required|string|max:255',
             'alamat' => 'required|string',
@@ -663,6 +688,8 @@ class ApiController extends Controller
 
     public function membersUpdate(Request $request, $id)
     {
+        Gate::forUser($request->user())->authorize('writeMember', MemberManagement::class);
+
         $request->validate([
             'nama' => 'required|string|max:255',
             'alamat' => 'required|string',
@@ -736,8 +763,10 @@ class ApiController extends Controller
         }
     }
 
-    public function membersDestroy($id)
+    public function membersDestroy(Request $request, $id)
     {
+        Gate::forUser($request->user())->authorize('writeMember', MemberManagement::class);
+
         DB::beginTransaction();
         try {
             $dataUser = DataUser::where('id_users', $id)->first();
@@ -779,6 +808,8 @@ class ApiController extends Controller
 
     public function eventsStore(Request $request)
     {
+        Gate::forUser($request->user())->authorize('manageEvents', Content::class);
+
         $request->validate([
             'judul_event' => 'required|string|max:255',
             'slug' => 'required|string|unique:events,slug',
@@ -839,6 +870,7 @@ class ApiController extends Controller
 
     public function eventsUpdate(Request $request, $id)
     {
+        Gate::forUser($request->user())->authorize('manageEvents', Content::class);
         $request->validate([
             'judul_event' => 'required|string|max:255',
             'slug' => 'required|string|unique:events,slug,' . $id,
@@ -901,8 +933,9 @@ class ApiController extends Controller
         }
     }
 
-    public function eventsDestroy($id)
+    public function eventsDestroy(Request $request, $id)
     {
+        Gate::forUser($request->user())->authorize('manageEvents', Content::class);
         $event = Event::where('id', $id)->where('is_active', '1')->first();
         if (!$event) {
             return response()->json(['success' => false, 'message' => 'Event not found'], 404);
@@ -1008,6 +1041,8 @@ class ApiController extends Controller
 
     public function newsStore(Request $request)
     {
+        Gate::forUser($request->user())->authorize('manageContent', Content::class);
+
         $request->validate([
             'judul' => 'required|string|max:255',
             'slug' => 'required|string|unique:beritas,slug',
@@ -1043,6 +1078,7 @@ class ApiController extends Controller
 
     public function newsUpdate(Request $request, $id)
     {
+        Gate::forUser($request->user())->authorize('manageContent', Content::class);
         $request->validate([
             'judul' => 'required|string|max:255',
             'slug' => 'required|string|unique:beritas,slug,' . $id,
@@ -1080,8 +1116,9 @@ class ApiController extends Controller
         }
     }
 
-    public function newsDestroy($id)
+    public function newsDestroy(Request $request, $id)
     {
+        Gate::forUser($request->user())->authorize('manageContent', Content::class);
         $news = Berita::where('id', $id)->where('is_active', '1')->first();
         if (!$news) {
             return response()->json(['success' => false, 'message' => 'News not found'], 404);
@@ -1117,6 +1154,8 @@ class ApiController extends Controller
 
     public function attendanceStore(Request $request)
     {
+        Gate::forUser($request->user())->authorize('recordAttendance', Dashboard::class);
+
         $request->validate([
             'id_anggota' => 'required|string',
             'id_event' => 'required|integer',
@@ -1206,6 +1245,8 @@ class ApiController extends Controller
 
     public function carouselUpdate(Request $request, $id)
     {
+        Gate::forUser($request->user())->authorize('manageContent', Content::class);
+
         $carousel = Carosel::where('id', $id)->first();
         if (!$carousel) {
             return response()->json(['success' => false, 'message' => 'Carousel not found'], 404);
@@ -1234,6 +1275,7 @@ class ApiController extends Controller
 
     public function infoPesantrenUpdate(Request $request)
     {
+        Gate::forUser($request->user())->authorize('manageContent', Content::class);
         $request->validate([
             'judul' => 'required|string|max:255',
             'deskripsi' => 'required|string',
@@ -1278,6 +1320,7 @@ class ApiController extends Controller
 
     public function infoMztUpdate(Request $request)
     {
+        Gate::forUser($request->user())->authorize('manageContent', Content::class);
         $request->validate([
             'judul' => 'required|string|max:255',
             'deskripsi' => 'required|string',
@@ -1347,8 +1390,10 @@ class ApiController extends Controller
     /**
      * ACTIVITY LOG ENDPOINTS
      */
-    public function activityLogIndex()
+    public function activityLogIndex(Request $request)
     {
+        Gate::forUser($request->user())->authorize('viewAuditLog', Dashboard::class);
+
         $logs = Activitas_log::with('dataUser:id,name')
             ->orderBy('created_at', 'desc')
             ->take(100)
@@ -1372,8 +1417,9 @@ class ApiController extends Controller
         ]);
     }
 
-    public function activityLogUser($userId)
+    public function activityLogUser(Request $request, $userId)
     {
+        Gate::forUser($request->user())->authorize('viewAuditLog', Dashboard::class);
         $logs = Activitas_log::where('user_id', $userId)
             ->orderBy('created_at', 'desc')
             ->get()

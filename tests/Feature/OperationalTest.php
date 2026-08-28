@@ -59,6 +59,7 @@ class OperationalTest extends TestCase
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password')->default('');
             $table->string('id_anggota')->nullable()->index();
+            $table->string('is_active')->default('1');
             $table->string('remember_token', 100)->nullable();
             $table->timestamps();
         });
@@ -415,6 +416,7 @@ class OperationalTest extends TestCase
         $this->seedAttendance(1, '100001', 111, 'A');
 
         $user = $this->makeUser('dashboard');
+        $user->is_active = '1'; // in-memory attr avoids an extra active-check query
         Sanctum::actingAs($user);
 
         DB::flushQueryLog();
@@ -433,6 +435,7 @@ class OperationalTest extends TestCase
         }
 
         $user = $this->makeUser('finance');
+        $user->is_active = '1'; // in-memory attr avoids an extra active-check query
         Sanctum::actingAs($user);
 
         DB::flushQueryLog();

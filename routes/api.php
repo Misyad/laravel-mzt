@@ -32,8 +32,8 @@ Route::get('/public/carousel', [ApiController::class, 'carouselIndex']);
 Route::get('/public/stats', [ApiController::class, 'publicStats']);
 Route::post('/public/contact', [ApiController::class, 'contactStore']);
 
-// Protected routes (require Sanctum token)
-Route::middleware('auth:sanctum')->group(function () {
+// Protected routes (require Sanctum token + an ACTIVE account per request).
+Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
 
 // Auth
     Route::get('/user', [ApiController::class, 'user']);

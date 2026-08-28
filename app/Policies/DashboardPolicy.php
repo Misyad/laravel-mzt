@@ -55,10 +55,41 @@ class DashboardPolicy
     }
 
     /**
-     * Legacy financial transactions (ApiController::transactionsIndex) —
+     * Legacy financial transactions (ApiController::transactionsIndex) �?"
      * verifier-only (finance/ketua/admin). Closed to other roles.
      */
     public function viewTransactions(User $user): bool
+    {
+        return RoleGuard::canVerify($user);
+    }
+
+    /* ------------------------------------------------- C-01 additions */
+
+    /**
+     * Legacy operational dashboard trio (ApiController::dashboardStats /
+     * dashboardCalendar / dashboardEvents) — back-office staff only.
+     */
+    public function viewLegacyDashboards(User $user): bool
+    {
+        return RoleGuard::isStaff($user);
+    }
+
+    /**
+     * Legacy attendance WRITE (ApiController::attendanceStore). Same operator
+     * set as QR check-in (prisensi/event ∪ verifier). `dashboard` role is
+     * deliberately NOT allowed — it is a console role, not a field operator.
+     */
+    public function recordAttendance(User $user): bool
+    {
+        return RoleGuard::canCheckIn($user);
+    }
+
+    /**
+     * System audit trail (activity log). Minimum safe boundary for this
+     * release: verifier set (finance/ketua/admin). If PRD evidence later
+     * requires a different reader set, amend here — single source of truth.
+     */
+    public function viewAuditLog(User $user): bool
     {
         return RoleGuard::canVerify($user);
     }

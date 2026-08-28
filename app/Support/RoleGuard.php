@@ -24,6 +24,9 @@ class RoleGuard
     /** Dedicated check-in operator roles (Phase 2C — PRD §17.12). */
     public const CHECK_IN_ROLES = ['prisensi', 'event'];
 
+    /** Full account / member administration (PRD §21.4 Administrator & Ketua). */
+    public const ADMIN_ROLES = ['ketua', 'admin'];
+
     /**
      * The role names attached to a user.
      *
@@ -51,6 +54,12 @@ class RoleGuard
     public static function isStaff(User $user): bool
     {
         return self::hasAnyRole($user, self::STAFF_ROLES);
+    }
+
+    /** Whether the user holds full account / member administration rights. */
+    public static function isAdmin(User $user): bool
+    {
+        return self::hasAnyRole($user, self::ADMIN_ROLES);
     }
 
     /** Whether the user may verify (approve/reject) payments. */
