@@ -46,6 +46,11 @@ class CheckInService
             return ['ok' => false, 'message' => 'Forbidden', 'code' => 403];
         }
 
+        // --- Exception: expired ticket (PRD §12.4 / §17.14.4) ---
+        if ($ticket->expired_at && $ticket->expired_at < now()) {
+            return ['ok' => false, 'message' => 'Tiket sudah expired', 'code' => 409];
+        }
+
         $order = $ticket->order;
         if (!$order) {
             return ['ok' => false, 'message' => 'Data pesanan tidak ditemukan', 'code' => 422];
