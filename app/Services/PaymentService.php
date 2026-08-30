@@ -58,9 +58,18 @@ class PaymentService
         }
 
         return DB::transaction(function () use ($actor, $order, $data, $method, $amount) {
+            $order = $order->lockForUpdate();
+
             $isImmediate = in_array($method, [PaymentMethod::CASH->value, PaymentMethod::SPONSOR->value, PaymentMethod::COMPLIMENTARY->value], true);
 
             $status = $isImmediate ? PaymentStatus::PAID->value : PaymentStatus::PENDING->value;
+
+            $outstanding = $this->outstanding($order);
+
+            // PRD §9.6: payment must not exceed the remaining bill — re-check inside lock.
+            if ($amount - config('payment.amount_epsilon', 0.001) > $outstanding['outstanding']) {
+                return ['ok' => false, 'message' => 'Pembayaran melebihi sisa tagihan', 'code' => 422];
+            }
 
             $payment = Payment::create([
                 'uuid' => (string) Str::uuid(),

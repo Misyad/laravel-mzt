@@ -51,6 +51,18 @@ class PaymentVerificationService
         $old = $payment->status;
 
         return DB::transaction(function () use ($payment, $actor, $status, $note, $old) {
+            // Lock the payment row inside transaction to prevent concurrent verify race.
+            $payment = Payment::where('id', $payment->id)->lockForUpdate()->first();
+
+            // Re-check status inside lock (prevents concurrent verify race).
+            if ($payment->status !== PaymentStatus::WAITING_VERIFICATION->value) {
+                return ['ok' => false, 'message' => 'Payment sudah diverifikasi atau ditolak sebelumnya', 'code' => 409];
+            }
+
+            if ($payment->status === $status) {
+                return ['ok' => true, 'payment' => $payment, 'changed' => false, 'message' => 'Pembayaran sudah dalam status tersebut', 'code' => 200];
+            }
+
             $payment->forceFill([
                 'status' => $status,
                 'verified_by' => $actor->id,
