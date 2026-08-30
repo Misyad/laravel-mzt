@@ -38,22 +38,27 @@ class TicketService
      */
     public function generate(User $actor, Order $order, ?string $note = null): array
     {
-        // Idempotent (PRD §24.11): an already usable ticket is returned as-is.
-        $existing = $order->tickets()
-            ->whereIn('status', [TicketStatus::ISSUED->value, TicketStatus::CHECKED_IN->value])
-            ->latest('id')
-            ->first();
-
-        if ($existing) {
-            return ['ok' => true, 'ticket' => $existing, 'issued' => false, 'message' => 'Tiket sudah tersedia', 'code' => 200];
-        }
-
-        // Issuance gate (PRD §10.3).
+        // Issuance gate (PRD §10.3) — done outside transaction for fast-fail.
         if (!$this->canIssue($order)) {
             return ['ok' => false, 'message' => 'Order belum memenuhi syarat penerbitan tiket', 'code' => 409];
         }
 
         return DB::transaction(function () use ($actor, $order, $note) {
+            // Use a locked query to serialize without altering $order type.
+            $orderId = $order->id;
+            $order = Order::where('id', $orderId)->lockForUpdate()->first();
+
+            // Idempotent (PRD §24.11): re-check inside lock so concurrent
+            // requests cannot both create a ticket for the same order.
+            $existing = $order->tickets()
+                ->whereIn('status', [TicketStatus::ISSUED->value, TicketStatus::CHECKED_IN->value])
+                ->latest('id')
+                ->first();
+
+            if ($existing) {
+                return ['ok' => true, 'ticket' => $existing, 'issued' => false, 'message' => 'Tiket sudah tersedia', 'code' => 200];
+            }
+
             $ticket = $this->allocateTicket($order, $actor);
 
             $ticket->logs()->create([
