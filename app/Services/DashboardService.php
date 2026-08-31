@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Contracts\DashboardServiceInterface;
+use App\DTO\AuditTimelineItem;
 use App\DTO\AttendanceSummary;
 use App\DTO\DashboardFilter;
 use App\DTO\EventDay;
@@ -164,6 +165,37 @@ class DashboardService implements DashboardServiceInterface
             tanggal_id: $data['tanggal_id'] ?? null,
             rows: $data['rows'],
             breakdown_per_gate: $data['breakdown_per_gate'] ?? [],
+        );
+    }
+
+    public function auditTimeline(DashboardFilter $filter): \Illuminate\Pagination\LengthAwarePaginator
+    {
+        $data = $this->query->auditTimeline(
+            $filter->eventId,
+            $filter->dateFrom,
+            $filter->dateTo,
+            $filter->entityType,
+            $filter->action,
+            $filter->actor,
+            $filter->q,
+        );
+
+        $items = collect($data['rows'])->map(fn ($item) => [
+            'actor' => $item->actor,
+            'action' => $item->action,
+            'entity' => $item->entity,
+            'entity_id' => $item->entity_id,
+            'old_status' => $item->old_status,
+            'new_status' => $item->new_status,
+            'timestamp' => $item->timestamp,
+            'note' => $item->note,
+        ]);
+
+        return new \Illuminate\Pagination\LengthAwarePaginator(
+            $items->values()->all(),
+            (int) $data['total'],
+            $filter->perPage ?? 20,
+            $filter->page ?? 1,
         );
     }
 }

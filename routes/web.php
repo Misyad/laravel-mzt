@@ -12,6 +12,7 @@ use App\Http\Controllers\admin\C_prisensi;
 use App\Http\Controllers\admin\C_Berita;
 use App\Http\Controllers\admin\C_Tampilan;
 use App\Http\Controllers\admin\C_Aktivitas_log;
+use App\Http\Controllers\admin\C_AuditTimeline;
 use App\Http\Controllers\admin\C_transaksi;
 use App\Http\Controllers\admin\C_ID_Card;
 
@@ -119,7 +120,8 @@ Route::middleware(['checkrole:aktivitas_user', 'revalidate'])->group(function ()
     Route::get('/tabel-log-user/data',[ C_Anggota::class, 'getData']);
     Route::get('/tabel-log-user/detail/{id}',[ C_Aktivitas_log::class, 'aktivitas']);
     Route::post('/tabel-log-user/detail/{id}/data',[ C_Aktivitas_log::class, 'dataAktivitasLog']);
-
+    Route::get('/audit-timeline',[ C_AuditTimeline::class, 'index']);
+    Route::get('/audit-timeline/data',[ C_AuditTimeline::class, 'data']);
 });
 Route::middleware(['checkrole:id_card', 'revalidate'])->group(function () {
     Route::get('/id-card',[ C_ID_Card::class, 'index']);

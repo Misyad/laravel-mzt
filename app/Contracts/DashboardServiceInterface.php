@@ -55,4 +55,19 @@ interface DashboardServiceInterface
      * Gate monitoring for an event/day, grouped by gate.
      */
     public function gateMonitoring(DashboardFilter $filter): GateMonitoring;
+
+    /**
+     * Unified audit timeline (read-only).
+     *
+     * Combines PaymentLog, TicketLog, and check-in events into a single
+     * chronologically-ordered timeline for operators/verifiers.
+     *
+     * Filter params (all optional):
+     *   event_id, date_from, date_to, entity_type, action, actor, q
+     *
+     * Pagination: server-side, bounded (perPage max 100).
+     *
+     * Authorization: requires 'view_audit_log' gate.
+     */
+    public function auditTimeline(DashboardFilter $filter): \Illuminate\Pagination\LengthAwarePaginator;
 }

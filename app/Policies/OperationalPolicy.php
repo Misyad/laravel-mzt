@@ -27,6 +27,14 @@ class OperationalPolicy
     }
 
     /**
+     * Fine-grained audit log data (verifier/authorized audit reader only).
+     */
+    public function viewAuditLog(User $user): bool
+    {
+        return RoleGuard::canVerify($user);
+    }
+
+    /**
      * Fine-grained participant data (names, member ids, contact info).
      */
     public function viewParticipantPII(User $user): bool

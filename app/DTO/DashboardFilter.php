@@ -17,6 +17,10 @@ class DashboardFilter
         public readonly ?int $eventId = null,
         public readonly ?string $status = null,
         public readonly ?int $tanggalId = null,
+        public readonly ?string $entityType = null,
+        public readonly ?string $action = null,
+        public readonly ?string $actor = null,
+        public readonly ?string $q = null,
     ) {
     }
 
@@ -31,6 +35,10 @@ class DashboardFilter
             eventId: $eventId,
             status: $this->status,
             tanggalId: $this->tanggalId,
+            entityType: $this->entityType,
+            action: $this->action,
+            actor: $this->actor,
+            q: $this->q,
         );
     }
 }

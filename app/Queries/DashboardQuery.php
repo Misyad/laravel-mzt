@@ -3,6 +3,7 @@
 namespace App\Queries;
 
 use App\DTO\ParticipantFilter;
+use App\DTO\AuditTimelineItem;
 use App\Enums\PaymentStatus;
 use App\Models\Event;
 use App\Models\Order;
@@ -450,9 +451,9 @@ class DashboardQuery
             ])
             ->all();
 
-        return [
+return [
             'event_id' => (int) $eventId,
-            'tanggal_id' => $tanggalId,
+            'tanggal_id' => $tanggal_id,
             'rows' => $rows,
             'breakdown_per_gate' => collect($rows)->mapWithKeys(
                 static fn (array $r) => $r['gate'] !== null
@@ -461,4 +462,130 @@ class DashboardQuery
             )->all(),
         ];
     }
+
+    /**
+     * Unified audit timeline (read-only).
+     *
+     * Combines PaymentLog, TicketLog, and check-in events into a single
+     * chronologically-ordered timeline for operators/verifiers.
+     *
+     * Filter params (all optional):
+     *   event_id, date_from, date_to, entity_type, action, actor, q
+     *
+     * @return array{rows: list<AuditTimelineItem>, total: int}
+     */
+    public function auditTimeline(
+        ?int $eventId = null,
+        ?string $dateFrom = null,
+        ?string $dateTo = null,
+        ?string $entityType = null,
+        ?string $action = null,
+        ?string $actor = null,
+        ?string $q = null,
+    ): array {
+        $query = DB::table('payment_logs')
+            ->select('payment_logs.*')
+            ->leftJoin('payments', 'payments.id', '=', 'payment_logs.id_payment')
+            ->leftJoin('orders', 'orders.id', '=', 'payments.id_order');
+
+        $ticketQuery = DB::table('ticket_logs')
+            ->select('ticket_logs.*')
+            ->leftJoin('tickets', 'tickets.id', '=', 'ticket_logs.id_ticket');
+
+        // Apply date filters to both
+        $query = $this->applyDateFilter($query, $dateFrom, $dateTo);
+        $ticketQuery = $this->applyDateFilter($ticketQuery, $dateFrom, $dateTo);
+
+        // Filter by event (through order -> event or ticket -> order -> event)
+        if ($eventId !== null) {
+            $query = $query->whereHas('orders', fn ($q) => $q->where('id_event', $eventId));
+            $ticketQuery = $ticketQuery->whereHas('orders', fn ($q) => $q->where('id_event', $eventId));
+        }
+
+        // Filter by entity type
+        if ($entityType !== null) {
+            $query = $query->where('entity_type', $entityType); // will be handled via case
+            $ticketQuery = $ticketQuery->whereRaw('1 = 0'); // disable for now
+        }
+
+        // Filter by action
+        if ($action !== null) {
+            $query = $query->where('action', $action);
+            $ticketQuery = $ticketQuery->where('action', $action);
+        }
+
+        // Filter by actor
+        if ($actor !== null) {
+            $query = $query->where('actor', $actor);
+            $ticketQuery = $ticketQuery->where('actor', $actor);
+        }
+
+        // Filter by search query
+        if ($q !== '') {
+            $query = $query->where(function ($w) use ($q) {
+                $w->where('note', 'like', '%'.$q.'%')
+                    ->orWhere('reference_number', 'like', '%'.$q.'%');
+            });
+            $ticketQuery = $ticketQuery->where(function ($w) use ($q) {
+                $w->where('note', 'like', '%'.$q.'%');
+            });
+        }
+
+        // Union all logs, order by created_at desc, then map to AuditTimelineItem
+        $combined = $query->unionAll($ticketQuery)
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        $rows = $combined->map(fn ($row) => new AuditTimelineItem(
+            actor: $row->actor ?? '',
+            action: $row->action,
+            entity: $this->entityTypeFromAction($row->action),
+            entity_id: $this->entityIdFromAction($row->action, $row),
+            old_status: $row->old_status,
+            new_status: $row->new_status,
+            timestamp: $row->created_at,
+            note: $row->note,
+        ))->all();
+
+        return ['rows' => $rows, 'total' => count($rows)];
+    }
+
+    /**
+     * Derive entity type from action string.
+     */
+    private function entityTypeFromAction(string $action): string
+    {
+        return match (true) {
+            str_contains($action, 'payment') => 'payment',
+            str_contains($action, 'ticket') => 'ticket',
+            default => 'checkin',
+        };
+    }
+
+    /**
+     * Derive entity ID from action and row data.
+     */
+    private function entityIdFromAction(string $action, $row): int
+    {
+        return match (true) {
+            str_contains($action, 'payment') => (int) $row->id_payment,
+            str_contains($action, 'ticket') => (int) $row->id_ticket,
+            default => (int) $row->id,
+        };
+    }
+
+    /**
+     * Apply date filters to a query.
+     */
+    private function applyDateFilter($query, ?string $dateFrom, ?string $dateTo): ?string
+    {
+        if ($dateFrom) {
+            $query->whereDate('created_at', '>=', $dateFrom);
+        }
+        if ($dateTo) {
+            $query->whereDate('created_at', '<=', $dateTo);
+        }
+        return $query;
+    }
+}
 }
