@@ -451,9 +451,9 @@ class DashboardQuery
             ])
             ->all();
 
-return [
+        return [
             'event_id' => (int) $eventId,
-            'tanggal_id' => $tanggal_id,
+            'tanggal_id' => $tanggalId,
             'rows' => $rows,
             'breakdown_per_gate' => collect($rows)->mapWithKeys(
                 static fn (array $r) => $r['gate'] !== null
@@ -498,8 +498,8 @@ return [
 
         // Filter by event (through order -> event or ticket -> order -> event)
         if ($eventId !== null) {
-            $query = $query->whereHas('orders', fn ($q) => $q->where('id_event', $eventId));
-            $ticketQuery = $ticketQuery->whereHas('orders', fn ($q) => $q->where('id_event', $eventId));
+            $query = $query->where('orders.id_event', $eventId);
+            $ticketQuery = $ticketQuery->leftJoin('orders', 'orders.id', '=', 'tickets.id_order')->where('orders.id_event', $eventId);
         }
 
         // Filter by entity type
@@ -521,7 +521,7 @@ return [
         }
 
         // Filter by search query
-        if ($q !== '') {
+        if ($q !== null && $q !== '') {
             $query = $query->where(function ($w) use ($q) {
                 $w->where('note', 'like', '%'.$q.'%')
                     ->orWhere('reference_number', 'like', '%'.$q.'%');
@@ -577,7 +577,7 @@ return [
     /**
      * Apply date filters to a query.
      */
-    private function applyDateFilter($query, ?string $dateFrom, ?string $dateTo): ?string
+    private function applyDateFilter($query, ?string $dateFrom, ?string $dateTo)
     {
         if ($dateFrom) {
             $query->whereDate('created_at', '>=', $dateFrom);
@@ -587,5 +587,4 @@ return [
         }
         return $query;
     }
-}
 }

@@ -7,7 +7,6 @@ use App\Models\HakAksesRole;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\User;
-use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\Sanctum;
@@ -15,7 +14,6 @@ use Tests\TestCase;
 
 class PaymentVerificationQueueTest extends TestCase
 {
-    use DatabaseTransactions;
 
     private static bool $schemaBuilt = false;
 
@@ -31,53 +29,77 @@ class PaymentVerificationQueueTest extends TestCase
 
     private function buildSchema(): void
     {
+        // Ensure users.is_active exists (CheckActiveAccount) – add if missing.
         if (!Schema::hasColumn('users','is_active')) {
             Schema::table('users', function ($table) { $table->string('is_active')->default('1'); });
         }
-        if (!Schema::hasTable('payment_logs')) {
-            Schema::create('payment_logs', function ($table) {
+        if (!Schema::hasTable('events')) {
+            Schema::create('events', function ($table) {
                 $table->id();
-                $table->unsignedBigInteger('id_payment');
-                $table->string('old_status', 30)->nullable();
-                $table->string('new_status', 30);
-                $table->text('note')->nullable();
-                $table->unsignedBigInteger('changed_by')->nullable();
-                $table->timestamp('created_at')->useCurrent();
-                $table->index(['id_payment', 'created_at']);
-            });
-        }
-        if (!Schema::hasTable('payment_proofs')) {
-            Schema::create('payment_proofs', function ($table) {
-                $table->id();
-                $table->unsignedBigInteger('id_payment');
-                $table->string('file_path');
-                $table->string('original_name')->nullable();
-                $table->integer('file_size')->nullable();
-                $table->timestamp('uploaded_at')->useCurrent();
-            });
-        }
-        if (Schema::hasTable('tickets') && !Schema::hasColumn('tickets','id_order')) {
-            Schema::dropIfExists('tickets');
-        }
-        if (!Schema::hasTable('tickets')) {
-            Schema::create('tickets', function ($table) {
-                $table->id();
-                $table->uuid('uuid')->unique();
-                $table->string('nomor_ticket', 30)->unique();
-                $table->unsignedBigInteger('id_order');
-                $table->string('qr_payload');
-                $table->string('status', 30)->default('issued');
-                $table->dateTime('issued_at')->nullable();
-                $table->dateTime('expired_at')->nullable();
-                $table->dateTime('used_at')->nullable();
-                $table->dateTime('revoked_at')->nullable();
-                $table->unsignedBigInteger('created_by')->nullable();
-                $table->unsignedBigInteger('updated_by')->nullable();
+                $table->string('judul_event');
+                $table->string('slug')->nullable()->unique();
+                $table->string('lokasi')->nullable();
+                $table->string('harga')->default('');
+                $table->text('deskripsi')->nullable();
+                $table->string('tanggal')->nullable();
+                $table->date('tanggal_mulai')->nullable();
+                $table->date('tanggal_selesai')->nullable();
+                $table->string('banner')->nullable();
+                $table->enum('is_active', ['1','0'])->default('1');
+                $table->unsignedInteger('kuota')->nullable();
+                $table->string('venue')->nullable();
+                $table->string('visibility',20)->default('public');
+                $table->dateTime('registrasi_dibuka')->nullable();
+                $table->dateTime('registrasi_ditutup')->nullable();
+                $table->decimal('harga_amount',12,2)->nullable();
                 $table->timestamps();
-                $table->index('id_order');
-                $table->index('status');
             });
+        } else {
+            foreach (['slug' => fn($t) => $t->string('slug')->nullable(), 'harga' => fn($t) => $t->string('harga')->default(''), 'harga_amount' => fn($t) => $t->decimal('harga_amount',12,2)->nullable(), 'kuota' => fn($t) => $t->unsignedInteger('kuota')->nullable(), 'venue' => fn($t) => $t->string('venue')->nullable(), 'visibility' => fn($t) => $t->string('visibility',20)->default('public'), 'tanggal_mulai' => fn($t) => $t->date('tanggal_mulai')->nullable(), 'tanggal_selesai' => fn($t) => $t->date('tanggal_selesai')->nullable(), 'registrasi_dibuka' => fn($t) => $t->dateTime('registrasi_dibuka')->nullable(), 'registrasi_ditutup' => fn($t) => $t->dateTime('registrasi_ditutup')->nullable(), 'deskripsi' => fn($t) => $t->text('deskripsi')->nullable(), 'judul_event' => fn($t) => $t->string('judul_event')->nullable(), 'lokasi' => fn($t) => $t->string('lokasi')->nullable(), 'tanggal' => fn($t) => $t->string('tanggal')->nullable(), 'banner' => fn($t) => $t->text('banner')->nullable(), 'is_active' => fn($t) => $t->enum('is_active',['1','0'])->default('1')] as $col => $cb) {
+                if (!Schema::hasColumn('events', $col)) Schema::table('events', fn($table) => $cb($table));
+            }
         }
+        // Rebuild payment/ticket tables from scratch to guarantee isolation
+        // from any prior test class that may have left a different schema
+        // (e.g. CheckInTest drops/recreates users/tickets/orders).
+        foreach (['payment_logs','payment_proofs','tickets','ticket_logs'] as $t) {
+            if (Schema::hasTable($t)) Schema::dropIfExists($t);
+        }
+        Schema::create('payment_logs', function ($table) {
+            $table->id();
+            $table->unsignedBigInteger('id_payment');
+            $table->string('old_status', 30)->nullable();
+            $table->string('new_status', 30);
+            $table->text('note')->nullable();
+            $table->unsignedBigInteger('changed_by')->nullable();
+            $table->timestamp('created_at')->useCurrent();
+            $table->index(['id_payment', 'created_at']);
+        });
+        Schema::create('payment_proofs', function ($table) {
+            $table->id();
+            $table->unsignedBigInteger('id_payment');
+            $table->string('file_path');
+            $table->string('original_name')->nullable();
+            $table->integer('file_size')->nullable();
+            $table->timestamp('uploaded_at')->useCurrent();
+        });
+        Schema::create('tickets', function ($table) {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->string('nomor_ticket', 30)->unique();
+            $table->unsignedBigInteger('id_order');
+            $table->string('qr_payload');
+            $table->string('status', 30)->default('issued');
+            $table->dateTime('issued_at')->nullable();
+            $table->dateTime('expired_at')->nullable();
+            $table->dateTime('used_at')->nullable();
+            $table->dateTime('revoked_at')->nullable();
+            $table->unsignedBigInteger('created_by')->nullable();
+            $table->unsignedBigInteger('updated_by')->nullable();
+            $table->timestamps();
+            $table->index('id_order');
+            $table->index('status');
+        });
         if (!Schema::hasTable('ticket_logs')) {
             Schema::create('ticket_logs', function ($table) {
                 $table->id();
