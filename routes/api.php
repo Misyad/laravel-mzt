@@ -10,6 +10,7 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\OperationalController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\TicketController;
+use App\Http\Controllers\admin\C_AuditTimeline;
 
 /*
 |--------------------------------------------------------------------------
@@ -145,6 +146,10 @@ Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
     // Activity Log
         Route::get('/activity-log', [ApiController::class, 'activityLogIndex']);
     Route::get('/activity-log/{userId}', [ApiController::class, 'activityLogUser']);
+
+    // M-05 — Unified Audit Timeline
+    Route::get('/audit-timeline', [C_AuditTimeline::class, 'index']);
+    Route::get('/audit-timeline/data', [C_AuditTimeline::class, 'data']);
 
     // Profile
     Route::post('/profile', [ApiController::class, 'profileUpdate']);

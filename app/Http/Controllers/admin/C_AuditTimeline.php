@@ -9,6 +9,7 @@ use App\DTO\DashboardFilter;
 use App\Queries\DashboardQuery;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\Gate;
 
 class C_AuditTimeline extends Controller
 {
@@ -21,34 +22,30 @@ class C_AuditTimeline extends Controller
 
     public function index()
     {
-        Gate::forUser(request()->user())->authorize('view_audit_log');
+        Gate::forUser(request()->user())->authorize('viewAuditLog', \App\Support\Operational::class);
         return view('admin.audit_timeline');
     }
 
     public function data(Request $request)
     {
-        Gate::forUser(request()->user())->authorize('view_audit_log');
+        Gate::forUser(request()->user())->authorize('viewAuditLog', \App\Support\Operational::class);
 
-        $filter = new DashboardFilter(
-            eventId: $request->input('event_id') !== null ? (int) $request->input('event_id') : null,
-            dateFrom: $request->input('date_from'),
-            dateTo: $request->input('date_to'),
-            entityType: $request->input('entity_type'),
-            action: $request->input('action'),
-            actor: $request->input('actor'),
-            q: $request->input('q'),
-            page: max((int) $request->input('page', 1), 1),
-            perPage: min(max((int) $request->input('per_page', 20), 1), 100),
-        );
+        $eventId = $request->input('event_id') !== null && $request->input('event_id') !== '' ? (int) $request->input('event_id') : null;
+        $dateFrom = $request->input('date_from');
+        $dateTo = $request->input('date_to');
+        $entityType = $request->input('entity_type');
+        $action = $request->input('action');
+        $actor = $request->input('actor');
+        $q = $request->input('q');
 
         $data = $this->query->auditTimeline(
-            $filter->eventId,
-            $filter->dateFrom,
-            $filter->dateTo,
-            $filter->entityType,
-            $filter->action,
-            $filter->actor,
-            $filter->q,
+            $eventId,
+            $dateFrom,
+            $dateTo,
+            $entityType,
+            $action,
+            $actor,
+            $q,
         );
 
         $items = collect($data['rows'])->map(fn ($item) => [
@@ -58,15 +55,21 @@ class C_AuditTimeline extends Controller
             'entity_id' => $item->entity_id,
             'old_status' => $item->old_status,
             'new_status' => $item->new_status,
-            'timestamp' => $item->timestamp->format('Y-m-d H:i:s'),
+            'timestamp' => $item->timestamp instanceof \DateTimeInterface ? $item->timestamp->format('Y-m-d H:i:s') : (string) $item->timestamp,
             'note' => $item->note,
         ]);
 
+        // Keep DataTables keys for legacy but also expose M-05 contract rows/total
         return response()->json([
-            'draw' => $request->draw ?? 1,
-            'recordsTotal' => $data['total'],
-            'recordsFiltered' => $data['total'],
-            'data' => $items->values()->all(),
+            'success' => true,
+            'data' => [
+                'rows' => $items->values()->all(),
+                'total' => $data['total'],
+                'data' => $items->values()->all(),
+                'recordsTotal' => $data['total'],
+                'recordsFiltered' => $data['total'],
+            ],
+            'draw' => $request->input('draw', 1),
         ], 200);
     }
 }

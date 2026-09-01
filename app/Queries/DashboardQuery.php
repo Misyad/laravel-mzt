@@ -484,12 +484,12 @@ class DashboardQuery
         ?string $q = null,
     ): array {
         $query = DB::table('payment_logs')
-            ->select('payment_logs.*')
+            ->selectRaw("'payment' as entity, payment_logs.*")
             ->leftJoin('payments', 'payments.id', '=', 'payment_logs.id_payment')
             ->leftJoin('orders', 'orders.id', '=', 'payments.id_order');
 
         $ticketQuery = DB::table('ticket_logs')
-            ->select('ticket_logs.*')
+            ->selectRaw("'ticket' as entity, ticket_logs.*")
             ->leftJoin('tickets', 'tickets.id', '=', 'ticket_logs.id_ticket');
 
         // Apply date filters to both
@@ -532,18 +532,19 @@ class DashboardQuery
         }
 
         // Union all logs, order by created_at desc, then map to AuditTimelineItem
+        // Note: payment_logs/ticket_logs have no action/actor columns; we derive from new_status/changed_by and entity literal.
         $combined = $query->unionAll($ticketQuery)
             ->orderBy('created_at', 'desc')
             ->get();
 
         $rows = $combined->map(fn ($row) => new AuditTimelineItem(
-            actor: $row->actor ?? '',
-            action: $row->action,
-            entity: $this->entityTypeFromAction($row->action),
-            entity_id: $this->entityIdFromAction($row->action, $row),
+            actor: (string) ($row->changed_by ?? ''),
+            action: (string) ($row->new_status ?? ''),
+            entity: (string) ($row->entity ?? 'payment'),
+            entity_id: (int) (($row->entity ?? 'payment') === 'payment' ? ($row->id_payment ?? $row->id) : ($row->id_ticket ?? $row->id)),
             old_status: $row->old_status,
             new_status: $row->new_status,
-            timestamp: $row->created_at,
+            timestamp: $row->created_at ? new \DateTime($row->created_at) : new \DateTime(),
             note: $row->note,
         ))->all();
 
