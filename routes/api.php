@@ -11,6 +11,7 @@ use App\Http\Controllers\OperationalController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\TicketController;
 use App\Http\Controllers\admin\C_AuditTimeline;
+use App\Http\Controllers\Public\KtaLookupController;
 
 /*
 |--------------------------------------------------------------------------
@@ -21,6 +22,10 @@ use App\Http\Controllers\admin\C_AuditTimeline;
 // Public routes
 Route::post('/login', [ApiController::class, 'login']);
 Route::post('/transaksi/pembayaran/hendle-payment', [C_transaksi::class, 'payment_hendler']);
+
+// Public — "Cek Status KTA" (rate-limited, anti-enumeration, no PII in response)
+Route::middleware('throttle:kta-check')->post('/public/kta/check', [KtaLookupController::class, 'check']);
+Route::middleware('throttle:kta-verify')->post('/public/kta/verify', [KtaLookupController::class, 'verify']);
 
 // Public data (no auth required)
 Route::get('/info/pesantren', [ApiController::class, 'infoPesantren']);
