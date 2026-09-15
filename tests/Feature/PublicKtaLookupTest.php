@@ -36,6 +36,10 @@ class PublicKtaLookupTest extends TestCase
         // Deterministic response timing in tests.
         config(['kta.response_delay_us' => 0]);
         config(['kta.rate_limit.check' => 5, 'kta.rate_limit.verify' => 15]);
+        // The shipped default is disabled (fail-safe); enable explicitly here
+        // so the behavioural tests exercise the live endpoints. The default
+        // itself is asserted separately in testPublicLookupIsDisabledByDefault.
+        config(['kta.enabled' => true]);
     }
 
     private function buildSchema(): void
@@ -540,6 +544,34 @@ class PublicKtaLookupTest extends TestCase
     }
 
     // ─────────────────────────── regression ─────────────────────────────────
+
+    public function testPublicLookupIsDisabledByDefault(): void
+    {
+        // The shipped config default MUST be false so the feature stays dark
+        // unless a deployment explicitly sets KTA_PUBLIC_ENABLED=true.
+        $this->assertFalse(
+            (bool) (require base_path('config/kta.php'))['enabled'],
+            'config/kta.php must default to disabled (fail-safe)',
+        );
+    }
+
+    public function testCheckReturns503WhenFeatureDisabled(): void
+    {
+        config(['kta.enabled' => false]);
+
+        $this->postJson('/api/public/kta/check', [
+            'mode' => 'member_id', 'id_anggota' => '0174011119',
+        ])->assertStatus(503)->assertJson(['success' => false]);
+    }
+
+    public function testVerifyReturns503WhenFeatureDisabled(): void
+    {
+        config(['kta.enabled' => false]);
+
+        $this->postJson('/api/public/kta/verify', [
+            'challenge_token' => 'x', 'method' => 'hp_last4', 'value' => '0000',
+        ])->assertStatus(503)->assertJson(['success' => false]);
+    }
 
     public function testExistingProtectedRouteStillRequiresAuth(): void
     {

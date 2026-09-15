@@ -7,12 +7,14 @@ return [
     | Public "Cek Status KTA" feature flag
     |--------------------------------------------------------------------------
     |
-    | When disabled the two public endpoints short-circuit with a generic
-    | 503 so the feature can be pulled without a code rollback.
+    | Defaults to DISABLED (fail-safe). The two public endpoints short-circuit
+    | with a generic 503 until a deployment explicitly opts in by setting
+    | KTA_PUBLIC_ENABLED=true in the environment. This keeps the feature dark
+    | unless a release intentionally enables it.
     |
     */
 
-    'enabled' => env('KTA_PUBLIC_ENABLED', true),
+    'enabled' => env('KTA_PUBLIC_ENABLED', false),
 
     /*
     |--------------------------------------------------------------------------
