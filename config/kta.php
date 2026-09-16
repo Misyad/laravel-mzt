@@ -98,6 +98,30 @@ return [
     'rate_limit' => [
         'check' => (int) env('KTA_CHECK_PER_MINUTE', 5),
         'verify' => (int) env('KTA_VERIFY_PER_MINUTE', 15),
+        'print_request' => (int) env('KTA_PRINT_REQUEST_PER_MINUTE', 10),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Physical print request (PRD v3.0)
+    |--------------------------------------------------------------------------
+    |
+    | `enabled` gates the whole physical workflow. `amount` is the price charged
+    | through Paymenku and is ALWAYS read from here — never from the client.
+    | `print_token` is the short-lived proof of ownership verification that the
+    | print-request endpoints require.
+    |
+    */
+
+    'print' => [
+        'enabled' => env('KTA_PRINT_ENABLED', false),
+        'amount' => (int) env('KTA_PRINT_AMOUNT', 25000),
+        'return_url' => env('KTA_PRINT_RETURN_URL', '/cek-kta'),
+        'channel_code' => env('KTA_PRINT_CHANNEL', 'qris'),
+    ],
+
+    'print_token' => [
+        'ttl' => (int) env('KTA_PRINT_TOKEN_TTL', 900), // seconds
     ],
 
     /*

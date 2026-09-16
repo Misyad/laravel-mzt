@@ -17,6 +17,7 @@ class AuthServiceProvider extends ServiceProvider
         \App\Models\Order::class => \App\Policies\PaymentPolicy::class,
         \App\Models\Ticket::class => \App\Policies\TicketPolicy::class,
         \App\Models\CommunicationLog::class => \App\Policies\CommunicationLogPolicy::class,
+        \App\Models\KtaPrintRequest::class => \App\Policies\KtaPrintRequestPolicy::class,
         \App\Support\Dashboard::class => \App\Policies\DashboardPolicy::class,
         \App\Support\Operational::class => \App\Policies\OperationalPolicy::class,
     ];

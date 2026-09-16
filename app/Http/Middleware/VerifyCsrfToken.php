@@ -12,6 +12,8 @@ class VerifyCsrfToken extends Middleware
      * @var array<int, string>
      */
     protected $except = [
-        //
+        // Paymenku webhook is signature-authenticated (HMAC SHA-256) and has no
+        // session; CSRF does not apply.
+        'api/webhooks/paymenku',
     ];
 }

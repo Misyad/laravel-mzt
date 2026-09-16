@@ -12,6 +12,9 @@ use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\TicketController;
 use App\Http\Controllers\admin\C_AuditTimeline;
 use App\Http\Controllers\Public\KtaLookupController;
+use App\Http\Controllers\Public\KtaPrintRequestController as PublicKtaPrintRequestController;
+use App\Http\Controllers\Public\PaymenkuWebhookController;
+use App\Http\Controllers\KtaPrintRequestController as AdminKtaPrintRequestController;
 
 /*
 |--------------------------------------------------------------------------
@@ -26,6 +29,15 @@ Route::post('/transaksi/pembayaran/hendle-payment', [C_transaksi::class, 'paymen
 // Public — "Cek Status KTA" (rate-limited, anti-enumeration, no PII in response)
 Route::middleware('throttle:kta-check')->post('/public/kta/check', [KtaLookupController::class, 'check']);
 Route::middleware('throttle:kta-verify')->post('/public/kta/verify', [KtaLookupController::class, 'verify']);
+
+// Public — physical KTA print request (identity from verified print token)
+Route::middleware('throttle:kta-print-request')->group(function () {
+    Route::get('/public/kta/print-request', [PublicKtaPrintRequestController::class, 'show']);
+    Route::post('/public/kta/print-request', [PublicKtaPrintRequestController::class, 'store']);
+});
+
+// Paymenku webhook (signature-authenticated; no session/CSRF)
+Route::post('/webhooks/paymenku', [PaymenkuWebhookController::class, 'handle']);
 
 // Public data (no auth required)
 Route::get('/info/pesantren', [ApiController::class, 'infoPesantren']);
@@ -155,6 +167,11 @@ Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
     // M-05 — Unified Audit Timeline
     Route::get('/audit-timeline', [C_AuditTimeline::class, 'index']);
     Route::get('/audit-timeline/data', [C_AuditTimeline::class, 'data']);
+
+    // KTA physical print queue (admin/verifier)
+    Route::get('/kta/print-requests', [AdminKtaPrintRequestController::class, 'index']);
+    Route::get('/kta/print-requests/{id}', [AdminKtaPrintRequestController::class, 'show']);
+    Route::put('/kta/print-requests/{id}/status', [AdminKtaPrintRequestController::class, 'updateStatus']);
 
     // Profile
     Route::post('/profile', [ApiController::class, 'profileUpdate']);

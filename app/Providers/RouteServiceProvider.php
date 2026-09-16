@@ -57,5 +57,9 @@ class RouteServiceProvider extends ServiceProvider
         RateLimiter::for('kta-verify', function (Request $request) {
             return Limit::perMinute((int) config('kta.rate_limit.verify', 15))->by($request->ip());
         });
+
+        RateLimiter::for('kta-print-request', function (Request $request) {
+            return Limit::perMinute((int) config('kta.rate_limit.print_request', 10))->by($request->ip());
+        });
     }
 }

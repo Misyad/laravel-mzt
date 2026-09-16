@@ -7,6 +7,7 @@ use App\Http\Requests\KtaCheckRequest;
 use App\Http\Requests\KtaVerifyRequest;
 use App\Services\KtaChallengeService;
 use App\Services\KtaLookupService;
+use App\Services\KtaPrintTokenService;
 
 /**
  * Public "Cek Status KTA" endpoints (PRD-derived, additive only).
@@ -29,6 +30,7 @@ class KtaLookupController extends Controller
     public function __construct(
         protected KtaLookupService $lookup,
         protected KtaChallengeService $challenge,
+        protected KtaPrintTokenService $printToken,
     ) {
     }
 
@@ -126,7 +128,7 @@ class KtaLookupController extends Controller
 
         return $this->noCache(response()->json([
             'success' => true,
-            'data' => $this->lookup->publicResult($candidateId),
+            'data' => $this->verifiedPayload($request, $candidateId),
         ], 200));
     }
 
@@ -163,8 +165,7 @@ class KtaLookupController extends Controller
 
             return $this->noCache(response()->json([
                 'success' => true,
-                'data' => array_merge($this->lookup->publicResult($candidateId), [
-                    'verified' => true,
+                'data' => array_merge($this->verifiedPayload($request, $candidateId), [
                     'note' => 'Identitas terverifikasi melalui data pendukung.',
                 ]),
             ], 200));
@@ -264,7 +265,32 @@ class KtaLookupController extends Controller
     }
 
     /**
-     * Add the configured constant response delay (µs) to flatten latency.
+     * Verified success payload: masked identity plus a short-lived print token.
+     *
+     * The token is the ONLY accepted proof for a physical KTA print request —
+     * the frontend never sends `id_users` / `id_anggota` as identity. It is
+     * bound to the same IP/UA as the lookup.
+     *
+     * @return array<string, mixed>
+     */
+    protected function verifiedPayload($request, int $candidateId): array
+    {
+        $payload = array_merge($this->lookup->publicResult($candidateId), ['verified' => true]);
+
+        if (config('kta.print.enabled', false)) {
+            $payload['print_token'] = $this->printToken->issue(
+                $candidateId,
+                $this->challenge->ipHash($request->ip()),
+                $this->challenge->agentHash($request->userAgent()),
+            );
+            $payload['print_amount'] = (int) config('kta.print.amount', 25000);
+        }
+
+        return $payload;
+    }
+
+    /**
+     * Add the configured constant response delay (μs) to flatten latency.
      */
     protected function applyResponseDelay(): void
     {
