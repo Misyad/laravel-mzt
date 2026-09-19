@@ -133,62 +133,90 @@ class KtaPrintRequestService
         $reference = isset($payload['reference_id']) ? (string) $payload['reference_id'] : null;
         $status = isset($payload['status']) ? strtolower((string) $payload['status']) : '';
 
-        // Idempotency: a duplicate (hash previously processed) is a no-op.
-        $duplicate = KtaPaymentEvent::where('payload_hash', $payloadHash)
-            ->whereNotNull('processed_at')
-            ->exists();
+        try {
+            return DB::transaction(function () use ($payloadHash, $payload, $trxId, $reference, $status) {
+                $request = $this->resolveRequest($reference, $trxId);
+                $event = KtaPaymentEvent::create([
+                    'kta_print_request_id' => $request?->id,
+                    'provider' => 'paymenku',
+                    'event_type' => isset($payload['event']) ? (string) $payload['event'] : null,
+                    'trx_id' => $trxId,
+                    'reference_id' => $reference,
+                    'status' => $status,
+                    'payload_hash' => $payloadHash,
+                    'signature_valid' => true,
+                ]);
 
-        $request = $this->resolveRequest($reference, $trxId);
+                return $this->processPaymentEvent($event, $request, $status, $payload);
+            });
+        } catch (QueryException $e) {
+            if (! $this->isUniqueViolation($e)) {
+                throw $e;
+            }
 
-        $event = KtaPaymentEvent::create([
-            'kta_print_request_id' => $request?->id,
-            'provider' => 'paymenku',
-            'event_type' => isset($payload['event']) ? (string) $payload['event'] : null,
-            'trx_id' => $trxId,
-            'reference_id' => $reference,
-            'status' => $status,
-            'payload_hash' => $payloadHash,
-            'signature_valid' => true,
-        ]);
+            return DB::transaction(function () use ($e, $payloadHash, $payload, $trxId, $reference, $status) {
+                $event = KtaPaymentEvent::where('payload_hash', $payloadHash)->lockForUpdate()->first();
+                if (! $event) {
+                    throw $e;
+                }
 
-        if ($duplicate) {
-            return ['ok' => true, 'code' => 200, 'message' => 'Event sudah diproses', 'duplicate' => true, 'request' => $request];
+                $request = $this->resolveRequest($reference, $trxId) ?? $event->request()->first();
+                if ($event->processed_at !== null) {
+                    return [
+                        'ok' => true,
+                        'code' => 200,
+                        'message' => 'Event sudah diproses',
+                        'duplicate' => true,
+                        'request' => $request,
+                    ];
+                }
+
+                if ($request && $event->kta_print_request_id !== $request->id) {
+                    $event->forceFill(['kta_print_request_id' => $request->id])->save();
+                }
+
+                return $this->processPaymentEvent($event, $request, $status, $payload);
+            });
         }
+    }
 
+    protected function processPaymentEvent(
+        KtaPaymentEvent $event,
+        ?KtaPrintRequest $request,
+        string $status,
+        array $payload,
+    ): array {
         if (! $request) {
             $event->forceFill(['processed_at' => now()])->save();
-            // Unknown reference: acknowledge so Paymenku stops retrying.
+
             return ['ok' => true, 'code' => 200, 'message' => 'Reference tidak dikenal'];
         }
 
-        // Amount validation — never trust the client, always compare to the
-        // amount we stored when creating the request.
+        $locked = KtaPrintRequest::where('id', $request->id)->lockForUpdate()->firstOrFail();
+
         if ($status === 'paid') {
-            $expected = (float) ($request->payment_amount ?? 0);
+            $expected = (float) ($locked->payment_amount ?? 0);
             $received = isset($payload['amount']) ? (float) $payload['amount'] : 0.0;
-            // Paymenku `amount` already includes the fee; accept >= expected.
             if ($expected > 0 && $received + 0.01 < $expected) {
                 $event->forceFill(['processed_at' => now()])->save();
+
                 return ['ok' => false, 'code' => 422, 'message' => 'Nominal pembayaran tidak cocok'];
             }
         }
 
-        $result = DB::transaction(function () use ($request, $event, $status, $payload) {
-            // Serialize concurrent webhooks on the same request.
-            $locked = KtaPrintRequest::where('id', $request->id)->lockForUpdate()->first();
+        $event->forceFill(['processed_at' => now()])->save();
 
-            $event->forceFill(['processed_at' => now()])->save();
-
-            if ($status === 'paid') {
+        if ($status === 'paid') {
+            if ($locked->status === KtaPrintStatus::PEMBAYARAN_EXPIRED->value) {
+                $this->recordLatePaidAfterExpiry($locked, $payload);
+            } else {
                 $this->markPaid($locked, $payload);
-            } elseif (in_array($status, ['failed', 'expired', 'cancelled'], true)) {
-                $this->markPaymentFailed($locked, $status);
             }
+        } elseif (in_array($status, ['failed', 'expired', 'cancelled'], true)) {
+            $this->markPaymentFailed($locked, $status);
+        }
 
-            return $locked->fresh();
-        });
-
-        return ['ok' => true, 'code' => 200, 'message' => 'Event diproses', 'request' => $result];
+        return ['ok' => true, 'code' => 200, 'message' => 'Event diproses', 'request' => $locked->fresh()];
     }
 
     /**
@@ -267,6 +295,24 @@ class KtaPrintRequestService
         return ['ok' => true, 'code' => 200, 'message' => 'Status diperbarui', 'request' => $updated];
     }
 
+    protected function recordLatePaidAfterExpiry(KtaPrintRequest $request, array $payload): void
+    {
+        $request->forceFill([
+            'payment_status' => 'paid',
+            'paid_at' => $request->paid_at ?: now(),
+            'payment_trx_id' => $request->payment_trx_id ?: ($payload['trx_id'] ?? null),
+        ])->save();
+
+        $this->log(
+            $request,
+            KtaPrintStatus::PEMBAYARAN_EXPIRED->value,
+            KtaPrintStatus::PEMBAYARAN_EXPIRED->value,
+            null,
+            'late_paid_after_expiry',
+            'paymenku_webhook',
+        );
+    }
+
     /**
      * Mark payment paid and advance the request, atomically within the caller's
      * transaction. Idempotent if already paid.
@@ -308,7 +354,7 @@ class KtaPrintRequestService
                 'status' => KtaPrintStatus::PEMBAYARAN_EXPIRED->value,
                 'active_key' => null,
             ])->save();
-            $this->log($request, $old, KtaPrintStatus::PEMBAYARAN_EXPIRED->value, null, 'Pembayaran ' . $status, 'paymenku_webhook');
+            $this->log($request, $old, KtaPrintStatus::PEMBAYARAN_EXPIRED->value, null, 'Pembayaran '.$status, 'paymenku_webhook');
         }
     }
 

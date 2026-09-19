@@ -12,11 +12,11 @@ use App\Models\User;
 use App\Services\KtaChallengeService;
 use App\Services\KtaPrintRequestService;
 use App\Services\KtaPrintTokenService;
-use App\Services\KtaLookupService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\Sanctum;
+use Symfony\Component\Process\Process;
 use Tests\TestCase;
 
 /**
@@ -50,6 +50,7 @@ class KtaPrintRequestTest extends TestCase
             'sessions',
             'users',
         ]);
+        $this->ensurePaymentEventPayloadHashUnique();
 
         config([
             'kta.enabled' => true,
@@ -193,7 +194,7 @@ class KtaPrintRequestTest extends TestCase
                 $t->string('trx_id')->nullable();
                 $t->string('reference_id', 60)->nullable();
                 $t->string('status', 30)->nullable();
-                $t->string('payload_hash', 64)->nullable();
+                $t->string('payload_hash', 64)->nullable()->unique();
                 $t->boolean('signature_valid')->default(false);
                 $t->dateTime('processed_at')->nullable();
                 $t->timestamp('created_at')->useCurrent();
@@ -231,16 +232,27 @@ class KtaPrintRequestTest extends TestCase
     }
 
     private function truncate(array $tables): void
-    {        foreach ($tables as $t) {
+    {
+        foreach ($tables as $t) {
             if (Schema::hasTable($t)) {
                 DB::table($t)->delete();
             }
         }
     }
 
+    private function ensurePaymentEventPayloadHashUnique(): void
+    {
+        try {
+            Schema::table('kta_payment_events', function ($table) {
+                $table->unique('payload_hash');
+            });
+        } catch (\Throwable $e) {
+        }
+    }
+
     private function makeMember(array $o = []): User
     {
-        $u = new User();
+        $u = new User;
         $u->name = $o['name'] ?? 'Achmad Hasanudin';
         $u->email = $o['email'] ?? 'a@example.test';
         $u->password = bcrypt('secret');
@@ -270,14 +282,16 @@ class KtaPrintRequestTest extends TestCase
     {
         $u = User::factory()->create(['is_active' => '1']);
         HakAksesRole::create(['id_users' => $u->id, 'nama_role' => $role, 'hak_akses' => 'access']);
+
         return $u;
     }
 
     /** Issue a valid print token bound to the test request context. */
     private function printToken(int $userId): string
     {
-        $challenge = new KtaChallengeService();
-        return (new KtaPrintTokenService())->issue(
+        $challenge = new KtaChallengeService;
+
+        return (new KtaPrintTokenService)->issue(
             $userId,
             $challenge->ipHash('127.0.0.1'),
             $challenge->agentHash('Symfony'),
@@ -297,7 +311,7 @@ class KtaPrintRequestTest extends TestCase
     {
         $u = $this->makeMember();
         // A lookup challenge token must NOT be accepted as a print token.
-        $challenge = new KtaChallengeService();
+        $challenge = new KtaChallengeService;
         $bad = $challenge->issue([
             'candidate_ids' => [$u->id], 'match' => 'single', 'verify_method' => 'hp_last4',
             'disambiguate_index' => 0, 'attempts_left' => 5, 'mode' => 'name_dob',
@@ -406,7 +420,8 @@ class KtaPrintRequestTest extends TestCase
     {
         $raw = json_encode($payload);
         $ts = (string) time();
-        $sig = hash_hmac('sha256', $ts . '.' . $raw, 'whsec_test_secret');
+        $sig = hash_hmac('sha256', $ts.'.'.$raw, 'whsec_test_secret');
+
         return [$raw, $ts, $sig];
     }
 
@@ -495,7 +510,87 @@ class KtaPrintRequestTest extends TestCase
 
         $req->refresh();
         $this->assertSame('menunggu_cetak', $req->status);
-        // Exactly one transition log for the paid event.
+        $this->assertSame(1, KtaPaymentEvent::where('payload_hash', hash('sha256', $raw))->count());
+        $this->assertSame(
+            1,
+            KtaPrintRequestLog::where('kta_print_request_id', $req->id)->where('new_status', 'menunggu_cetak')->count()
+        );
+    }
+
+    public function test_existing_unprocessed_event_is_resumed(): void
+    {
+        $u = $this->makeMember();
+        $req = $this->makePending($u->id);
+        $payload = $this->paidPayload('KTA-1', 'IDP-1');
+        [$raw, $ts, $sig] = $this->signedWebhook($payload);
+        $hash = hash('sha256', $raw);
+
+        KtaPaymentEvent::create([
+            'kta_print_request_id' => $req->id,
+            'provider' => 'paymenku',
+            'event_type' => $payload['event'],
+            'trx_id' => $payload['trx_id'],
+            'reference_id' => $payload['reference_id'],
+            'status' => $payload['status'],
+            'payload_hash' => $hash,
+            'signature_valid' => true,
+        ]);
+
+        $this->call('POST', '/api/webhooks/paymenku', [], [], [], [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_X_PAYMENKU_TIMESTAMP' => $ts,
+            'HTTP_X_PAYMENKU_SIGNATURE' => $sig,
+        ], $raw)->assertStatus(200);
+
+        $this->assertSame(1, KtaPaymentEvent::where('payload_hash', $hash)->count());
+        $this->assertNotNull(KtaPaymentEvent::where('payload_hash', $hash)->value('processed_at'));
+        $this->assertSame('menunggu_cetak', $req->refresh()->status);
+        $this->assertSame(
+            1,
+            KtaPrintRequestLog::where('kta_print_request_id', $req->id)->where('new_status', 'menunggu_cetak')->count()
+        );
+    }
+
+    public function test_two_workers_process_the_same_webhook_once(): void
+    {
+        $u = $this->makeMember();
+        $req = $this->makePending($u->id);
+        $payload = $this->paidPayload('KTA-1', 'IDP-1');
+        $raw = json_encode($payload, JSON_THROW_ON_ERROR);
+        $hash = hash('sha256', $raw);
+        $gate = tempnam(sys_get_temp_dir(), 'kta-webhook-');
+        unlink($gate);
+
+        $script = <<<'PHP'
+require getcwd().'/vendor/autoload.php';
+$app = require getcwd().'/bootstrap/app.php';
+$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+while (! file_exists($argv[3])) {
+    usleep(1000);
+}
+$payload = json_decode(base64_decode($argv[1]), true, 512, JSON_THROW_ON_ERROR);
+$result = app(App\Services\KtaPrintRequestService::class)->applyPaymentEvent($argv[2], $payload);
+exit(($result['ok'] ?? false) ? 0 : 1);
+PHP;
+
+        $command = [PHP_BINARY, '-r', $script, base64_encode($raw), $hash, $gate];
+        $first = new Process($command, base_path());
+        $second = new Process($command, base_path());
+        $first->start();
+        $second->start();
+        touch($gate);
+
+        try {
+            $first->wait();
+            $second->wait();
+        } finally {
+            @unlink($gate);
+        }
+
+        $this->assertTrue($first->isSuccessful(), $first->getErrorOutput());
+        $this->assertTrue($second->isSuccessful(), $second->getErrorOutput());
+        $this->assertSame(1, KtaPaymentEvent::where('payload_hash', $hash)->count());
+        $this->assertSame('menunggu_cetak', $req->refresh()->status);
         $this->assertSame(
             1,
             KtaPrintRequestLog::where('kta_print_request_id', $req->id)->where('new_status', 'menunggu_cetak')->count()
@@ -548,6 +643,49 @@ class KtaPrintRequestTest extends TestCase
         $this->assertNull($req->active_key);
     }
 
+    public function test_late_paid_after_expiry_is_audited_without_entering_print_queue(): void
+    {
+        $u = $this->makeMember();
+        $req = $this->makePending($u->id);
+
+        $expired = array_merge($this->paidPayload('KTA-1', 'IDP-1'), ['status' => 'expired']);
+        [$expiredRaw, $expiredTs, $expiredSig] = $this->signedWebhook($expired);
+        $this->call('POST', '/api/webhooks/paymenku', [], [], [], [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_X_PAYMENKU_TIMESTAMP' => $expiredTs,
+            'HTTP_X_PAYMENKU_SIGNATURE' => $expiredSig,
+        ], $expiredRaw)->assertStatus(200);
+
+        [$paidRaw, $paidTs, $paidSig] = $this->signedWebhook($this->paidPayload('KTA-1', 'IDP-1'));
+        $this->call('POST', '/api/webhooks/paymenku', [], [], [], [
+            'CONTENT_TYPE' => 'application/json',
+            'HTTP_X_PAYMENKU_TIMESTAMP' => $paidTs,
+            'HTTP_X_PAYMENKU_SIGNATURE' => $paidSig,
+        ], $paidRaw)->assertStatus(200);
+
+        $req->refresh();
+        $this->assertSame('pembayaran_expired', $req->status);
+        $this->assertSame('paid', $req->payment_status);
+        $this->assertNull($req->active_key);
+        $this->assertSame(2, KtaPaymentEvent::where('kta_print_request_id', $req->id)->count());
+        $this->assertSame(
+            0,
+            KtaPrintRequestLog::where('kta_print_request_id', $req->id)->where('new_status', 'menunggu_cetak')->count()
+        );
+        $this->assertDatabaseHas('kta_print_request_logs', [
+            'kta_print_request_id' => $req->id,
+            'old_status' => 'pembayaran_expired',
+            'new_status' => 'pembayaran_expired',
+            'reason' => 'late_paid_after_expiry',
+            'source' => 'paymenku_webhook',
+        ]);
+
+        Sanctum::actingAs($this->makeStaff('finance'));
+        $this->getJson('/api/kta/print-requests')
+            ->assertStatus(200)
+            ->assertJsonPath('data.total', 0);
+    }
+
     // ─────────────────────────── admin transitions ──────────────────────────
 
     public function test_admin_queue_requires_role(): void
@@ -568,6 +706,31 @@ class KtaPrintRequestTest extends TestCase
         $res = $this->getJson('/api/kta/print-requests')->assertStatus(200)->json('data');
 
         $this->assertSame(0, $res['total']);
+    }
+
+    public function test_admin_detail_requires_role_and_returns_delivery_fields(): void
+    {
+        $u = $this->makeMember();
+        $req = $this->makePending($u->id);
+        $req->forceFill([
+            'delivery_method' => 'delivery',
+            'recipient_name' => 'Ahmad Hasan',
+            'recipient_phone' => '081234567890',
+            'shipping_address' => 'Jl. Mawar No. 10',
+            'notes' => 'Hubungi sebelum dikirim',
+        ])->save();
+
+        Sanctum::actingAs($this->makeStaff('dashboard'));
+        $this->getJson('/api/kta/print-requests')->assertStatus(200);
+        $this->getJson("/api/kta/print-requests/{$req->id}")->assertStatus(403);
+
+        Sanctum::actingAs($this->makeStaff('finance'));
+        $this->getJson("/api/kta/print-requests/{$req->id}")
+            ->assertStatus(200)
+            ->assertJsonPath('data.request.recipient_name', 'Ahmad Hasan')
+            ->assertJsonPath('data.request.recipient_phone', '081234567890')
+            ->assertJsonPath('data.request.shipping_address', 'Jl. Mawar No. 10')
+            ->assertJsonPath('data.request.notes', 'Hubungi sebelum dikirim');
     }
 
     public function test_admin_can_run_full_pickup_flow(): void
@@ -678,7 +841,7 @@ class KtaPrintRequestTest extends TestCase
         $u = $this->makeMember();
         $this->makePending($u->id);
 
-        $this->getJson('/api/public/kta/print-request?print_token=' . urlencode($this->printToken($u->id)))
+        $this->getJson('/api/public/kta/print-request?print_token='.urlencode($this->printToken($u->id)))
             ->assertStatus(200)
             ->assertJson(['success' => true, 'data' => ['request' => ['status' => 'menunggu_pembayaran']]]);
     }
