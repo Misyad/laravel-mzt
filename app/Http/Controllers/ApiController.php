@@ -1361,39 +1361,6 @@ class ApiController extends Controller
         ]);
     }
 
-
-    /**
-     * KTA CARD (HTML view)
-     */
-    public function ktaView($id)
-    {
-        $dataUser = DataUser::where('id_users', $id)->first();
-        $user = User::where('id', $id)->first();
-
-        if (!$dataUser || !$user) {
-            abort(404, 'Member not found');
-        }
-
-        $fotoPath = $dataUser->foto ? '/storage/' . $dataUser->foto : '/assets/avatar-1.png';
-        $cekFoto = $dataUser->foto ? public_path('storage/' . $dataUser->foto) : '';
-        if (empty($dataUser->foto) || !\Illuminate\Support\Facades\File::exists($cekFoto)) {
-            $fotoPath = '/assets/avatar-1.png';
-        }
-
-        $data = [
-            'nama' => $user->name,
-            'id_anggota' => $user->id_anggota,
-            'alamat' => $dataUser->alamat,
-            'niqobah' => $dataUser->niqobah,
-            'tahun_masuk' => date('Y', strtotime($dataUser->tahun_masuk)),
-            'tahun_keluar' => date('Y', strtotime($dataUser->tahun_keluar)),
-            'bracode' => $dataUser->barcode,
-            'profil' => $fotoPath,
-        ];
-
-        return view('kta', $data);
-    }
-
     /**
      * ACTIVITY LOG ENDPOINTS
      */

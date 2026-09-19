@@ -68,6 +68,11 @@ enum KtaPrintStatus: string
         ];
     }
 
+    public static function printableValues(): array
+    {
+        return [...self::productionQueueValues(), self::SELESAI->value];
+    }
+
     public function isTerminal(): bool
     {
         return in_array($this->value, [

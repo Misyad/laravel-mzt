@@ -27,6 +27,8 @@ class RoleGuard
     /** Full account / member administration (PRD §21.4 Administrator & Ketua). */
     public const ADMIN_ROLES = ['ketua', 'admin'];
 
+    public const KTA_CARD_ROLES = ['id_card', 'ketua', 'admin'];
+
     /**
      * The role names attached to a user.
      *
@@ -60,6 +62,11 @@ class RoleGuard
     public static function isAdmin(User $user): bool
     {
         return self::hasAnyRole($user, self::ADMIN_ROLES);
+    }
+
+    public static function canViewKtaCards(User $user): bool
+    {
+        return self::hasAnyRole($user, self::KTA_CARD_ROLES);
     }
 
     /** Whether the user may verify (approve/reject) payments. */

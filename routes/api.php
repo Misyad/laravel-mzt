@@ -15,6 +15,7 @@ use App\Http\Controllers\Public\KtaLookupController;
 use App\Http\Controllers\Public\KtaPrintRequestController as PublicKtaPrintRequestController;
 use App\Http\Controllers\Public\PaymenkuWebhookController;
 use App\Http\Controllers\KtaPrintRequestController as AdminKtaPrintRequestController;
+use App\Http\Controllers\KtaCardController;
 use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 
 /*
@@ -173,12 +174,13 @@ Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
 
     // KTA physical print queue (admin/verifier)
     Route::get('/kta/print-requests', [AdminKtaPrintRequestController::class, 'index']);
+    Route::get('/kta/print-requests/{id}/card', [KtaCardController::class, 'fromPrintRequest']);
     Route::get('/kta/print-requests/{id}', [AdminKtaPrintRequestController::class, 'show']);
     Route::put('/kta/print-requests/{id}/status', [AdminKtaPrintRequestController::class, 'updateStatus']);
+
+    Route::get('/kta/cards', [KtaCardController::class, 'index']);
+    Route::get('/kta/cards/{id}', [KtaCardController::class, 'show']);
 
     // Profile
     Route::post('/profile', [ApiController::class, 'profileUpdate']);
 });
-
-// KTA Card (public HTML view)
-Route::get('/kta/{id}', [ApiController::class, 'ktaView']);

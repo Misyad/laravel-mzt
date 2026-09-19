@@ -23,7 +23,12 @@ class KtaPrintRequestPolicy
 
     public function viewQueue(User $user): bool
     {
-        return RoleGuard::isStaff($user);
+        return RoleGuard::isStaff($user) || RoleGuard::canViewKtaCards($user);
+    }
+
+    public function viewCard(User $user, KtaPrintRequest $request): bool
+    {
+        return RoleGuard::canViewKtaCards($user);
     }
 
     public function process(User $user): bool

@@ -697,6 +697,89 @@ PHP;
         $this->getJson('/api/kta/print-requests')->assertStatus(403);
     }
 
+    public function test_id_card_operator_can_view_masked_queue_but_cannot_view_delivery_detail_or_process(): void
+    {
+        $u = $this->makeMember();
+        $req = $this->makePending($u->id);
+        $req->forceFill(['status' => 'menunggu_cetak', 'payment_status' => 'paid'])->save();
+
+        Sanctum::actingAs($this->makeStaff('id_card'));
+
+        $this->getJson('/api/kta/print-requests')->assertStatus(200);
+        $this->getJson("/api/kta/print-requests/{$req->id}")->assertStatus(403);
+        $this->putJson("/api/kta/print-requests/{$req->id}/status", [
+            'status' => 'sudah_dicetak',
+        ])->assertStatus(403);
+    }
+
+    public function test_kta_card_endpoints_require_dedicated_roles_and_minimize_pii(): void
+    {
+        $member = $this->makeMember();
+
+        $this->getJson('/api/kta/cards')->assertStatus(401);
+        $this->getJson('/api/kta/123')->assertStatus(404);
+
+        Sanctum::actingAs($this->makeStaff('finance'));
+        $this->getJson('/api/kta/cards')->assertStatus(403);
+
+        Sanctum::actingAs($this->makeStaff('id_card'));
+        $this->getJson('/api/members')->assertStatus(403);
+
+        $index = $this->getJson('/api/kta/cards')->assertStatus(200);
+        $this->assertSame(
+            ['id_users', 'id_anggota', 'nama'],
+            array_keys($index->json('data.0'))
+        );
+
+        $card = $this->getJson("/api/kta/cards/{$member->id}")
+            ->assertStatus(200)
+            ->assertJsonPath('data.id_anggota', '0174011119')
+            ->assertJsonPath('data.nama', 'Achmad Hasanudin')
+            ->assertJsonPath('data.alamat', 'Jl. Contoh')
+            ->assertJsonPath('data.niqobah', 'Pakis')
+            ->assertJsonPath('data.tahun_masuk', '2011')
+            ->assertJsonPath('data.tahun_keluar', '2019');
+
+        $this->assertStringStartsWith('data:image/svg+xml;base64,', $card->json('data.barcode_data_uri'));
+        $this->assertArrayNotHasKey('email', $card->json('data'));
+        $this->assertArrayNotHasKey('no_hp', $card->json('data'));
+        $this->assertArrayNotHasKey('pekerjaan', $card->json('data'));
+    }
+
+    public function test_print_request_card_requires_paid_request_and_card_role(): void
+    {
+        $member = $this->makeMember();
+        $req = $this->makePending($member->id);
+
+        Sanctum::actingAs($this->makeStaff('id_card'));
+        $this->getJson("/api/kta/print-requests/{$req->id}/card")->assertStatus(409);
+
+        $req->forceFill([
+            'status' => 'menunggu_cetak',
+            'payment_status' => 'paid',
+            'id_anggota_snapshot' => '0174099999',
+        ])->save();
+        $this->getJson("/api/kta/print-requests/{$req->id}/card")
+            ->assertStatus(200)
+            ->assertJsonPath('data.id_users', $member->id)
+            ->assertJsonPath('data.id_anggota', '0174099999')
+            ->assertJsonPath('data.barcode_value', '0174099999');
+
+        $req->forceFill(['status' => 'pembayaran_expired'])->save();
+        $this->getJson("/api/kta/print-requests/{$req->id}/card")->assertStatus(409);
+
+        Sanctum::actingAs($this->makeStaff('finance'));
+        $this->getJson("/api/kta/print-requests/{$req->id}/card")->assertStatus(403);
+    }
+
+    public function test_inactive_member_card_is_not_available(): void
+    {
+        $member = $this->makeMember(['is_active' => '0']);
+
+        Sanctum::actingAs($this->makeStaff('admin'));
+        $this->getJson("/api/kta/cards/{$member->id}")->assertStatus(404);
+    }
+
     public function test_admin_queue_defaults_to_production_statuses_only(): void
     {
         $u = $this->makeMember();

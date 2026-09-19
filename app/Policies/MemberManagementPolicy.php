@@ -28,6 +28,11 @@ class MemberManagementPolicy
         return RoleGuard::isStaff($user);
     }
 
+    public function viewCards(User $user): bool
+    {
+        return RoleGuard::canViewKtaCards($user);
+    }
+
     public function manageAccounts(User $user): bool
     {
         return RoleGuard::isAdmin($user);
