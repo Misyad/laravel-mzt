@@ -15,6 +15,7 @@ use App\Http\Controllers\Public\KtaLookupController;
 use App\Http\Controllers\Public\KtaPrintRequestController as PublicKtaPrintRequestController;
 use App\Http\Controllers\Public\PaymenkuWebhookController;
 use App\Http\Controllers\KtaPrintRequestController as AdminKtaPrintRequestController;
+use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 
 /*
 |--------------------------------------------------------------------------
@@ -26,14 +27,16 @@ use App\Http\Controllers\KtaPrintRequestController as AdminKtaPrintRequestContro
 Route::post('/login', [ApiController::class, 'login']);
 Route::post('/transaksi/pembayaran/hendle-payment', [C_transaksi::class, 'payment_hendler']);
 
-// Public — "Cek Status KTA" (rate-limited, anti-enumeration, no PII in response)
-Route::middleware('throttle:kta-check')->post('/public/kta/check', [KtaLookupController::class, 'check']);
-Route::middleware('throttle:kta-verify')->post('/public/kta/verify', [KtaLookupController::class, 'verify']);
+Route::withoutMiddleware(EnsureFrontendRequestsAreStateful::class)->group(function () {
+    // Public — "Cek Status KTA" (rate-limited, anti-enumeration, no PII in response)
+    Route::middleware('throttle:kta-check')->post('/public/kta/check', [KtaLookupController::class, 'check']);
+    Route::middleware('throttle:kta-verify')->post('/public/kta/verify', [KtaLookupController::class, 'verify']);
 
-// Public — physical KTA print request (identity from verified print token)
-Route::middleware('throttle:kta-print-request')->group(function () {
-    Route::get('/public/kta/print-request', [PublicKtaPrintRequestController::class, 'show']);
-    Route::post('/public/kta/print-request', [PublicKtaPrintRequestController::class, 'store']);
+    // Public — physical KTA print request (identity from verified print token)
+    Route::middleware('throttle:kta-print-request')->group(function () {
+        Route::get('/public/kta/print-request', [PublicKtaPrintRequestController::class, 'show']);
+        Route::post('/public/kta/print-request', [PublicKtaPrintRequestController::class, 'store']);
+    });
 });
 
 // Paymenku webhook (signature-authenticated; no session/CSRF)
