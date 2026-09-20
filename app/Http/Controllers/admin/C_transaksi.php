@@ -9,12 +9,9 @@ use App\Models\Event;
 use DataPicker;
 use App\Models\DataUser;
 use App\Models\User;
-use Illuminate\Support\Facades\Storage;
-use Image;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\File;
-use DNS1D;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
+use App\Support\Dashboard;
 
 
 
@@ -115,14 +112,6 @@ class C_transaksi extends Controller
             'foto' => ['image', 'mimes:jpg,png,jpeg,gif,svg', 'max:1048'],
         ]);
 
-        $jml = User::count();
-        $jml2 = $jml + 1;
-        $paddedNumber = str_pad($jml2, 4, "0", STR_PAD_LEFT);
-        $tahun = substr(date("Y", strtotime($request->tanggal_lahir)), -2);
-        $tahun_masuk = substr(date("Y", strtotime($request->tahun_masuk)), -2);
-        $tahun_keluar = substr(date("Y", strtotime($request->tahun_keluar)), -2);
-        $id_anggota = $paddedNumber . $tahun . $tahun_masuk . $tahun_keluar;
-
         // ini untuk id transaksi
         $timestamp = now()->format('ymd'); // Mengambil tanggal dalam format YYMMDD
         $randomNumber = str_pad(mt_rand(0, 9999), 4, '0', STR_PAD_LEFT); // Menghasilkan angka acak 4 digit dengan leading zero jika diperlukan
@@ -133,95 +122,33 @@ class C_transaksi extends Controller
         $hargaTotal = (int)str_replace(array("Rp. ", "."), "", $harga_grend);
         $hargaComper = (int)str_replace(array("Rp. ", "."), "", $event->harga);
 
-        $data_tlp = DataUser::where(['no_hp' => $request->nomer_telpon])->count();
-        $data_user_nama = user::where(['name' => $request->nama])->count();
-
-        $file_status = $_FILES["foto"]["name"];
-        if(($data_tlp == 0 && $data_user_nama == 0)){
-
-            $barcode = \DNS1D::getBarcodePNG($id_anggota, 'C39');
-            $filename = 'barcode-' . $id_anggota . '.png';
-            $image_path_barcode = 'image/barcode/' . $filename;
-            Storage::disk('public')->put('image/barcode/' . $filename, base64_decode($barcode));
-            $id = User::insertGetId([
-                'id_anggota' => $id_anggota,
-                'name' => $request->nama,
-                'email' => $request->email,
-                'password' => Hash::make($id_anggota),
-            ]);
-            if ($file_status) {
-
-                $image_path = $request->file('foto')->store('image/anggota', 'public');
-                $image = Image::make(storage_path('app/public/' . $image_path));
-                $image->resize(300, 400); // Mengubah ukuran gambar
-                $image->save();
-
-                $status = DataUser::insert([
-                    'id_users' => $id,
-                    'barcode' => $image_path_barcode,
-                    'alamat' => $request->alamat,
-                    'niqobah' => $request->niqobah,
-                    'no_hp' => $request->nomer_telpon,
-                    'pekerjaan' => $request->pekerjaan,
-                    'tempat_lahir' => $request->tempat_lahir,
-                    'tanggal_lahir' => date("Y-m-d", strtotime($request->tanggal_lahir)),
-                    'tahun_masuk' => date("Y-m-d", strtotime($request->tahun_masuk)),
-                    'tahun_keluar' => date("Y-m-d", strtotime($request->tahun_keluar)),
-                    'foto' => $image_path,
-                ]);
-            } else {
-                $status =  DataUser::insert([
-                    'id_users' => $id,
-                    'barcode' => $image_path_barcode,
-                    'alamat' => $request->alamat,
-                    'niqobah' => $request->niqobah,
-                    'no_hp' => $request->nomer_telpon,
-                    'pekerjaan' => $request->pekerjaan,
-                    'tempat_lahir' => $request->tempat_lahir,
-                    'tanggal_lahir' => date("Y-m-d", strtotime($request->tanggal_lahir)),
-                    'tahun_masuk' => date("Y-m-d", strtotime($request->tahun_masuk)),
-                    'tahun_keluar' => date("Y-m-d", strtotime($request->tahun_keluar)),
-                ]);
-            }
-            $status = Transaksi_event::insert([
-                'id_event' => $request->id_event,
-                'id_anggota' => $id_anggota,
-                'gross_amount' =>  number_format($hargaTotal, 2, '.', ''),
-                'payment_type' => 'admin',
-                'transaction_status' => 'settlement',
-                'order_id' => $id_transaksi,
-                'updated_at' => date("Y-m-d H:i:s"),
-                'created_at' => date("Y-m-d H:i:s"),
-            ]);
-            if ($status) {
-
-                return response()->json([
-                    'success' => true,
-                    'message' => 'berhasil!!',
-                    'data'    => 'pendaftaran event berhasil'
-                ], 200);
-            }
-            return response()->json([
-                'success' => true,
-                'message' => 'gagal!!',
-                'data'    => 'pendaftaran event gagal'
-            ], 400);
-        }else{
-
-            $data_user = DataUser::join('users', 'users.id', '=', 'data_users.id_users')
-            ->select('data_users.*', 'users.name', 'users.id_anggota', 'users.id as id_users')
-            ->where(function ($query) use ($request) {
-                $query->where('data_users.no_hp', $request->nomer_telpon)
-                      ->orWhere('users.name', 'like', '%' . $request->nama . '%');
-            })
+        $file_status = $request->hasFile('foto');
+        $data_user = DataUser::join('users', 'users.id', '=', 'data_users.id_users')
+            ->select('data_users.*', 'users.name', 'users.id_anggota', 'users.id as id_users', 'users.is_active as user_is_active')
+            ->where('data_users.no_hp', $request->nomer_telpon)
             ->first();
+
+        if (! $data_user) {
+            return response()->json([
+                'success' => false,
+                'code' => 'EXISTING_MEMBER_REQUIRED',
+                'message' => 'Pendaftaran hanya tersedia untuk akun anggota yang sudah ada.',
+            ], 422);
+        }else{
             $statusPendaftaran = Transaksi_event::where(['id_anggota' => $data_user->id_anggota, 'id_event' => $request->id_event]);
+            $existingUser = User::where('id', $data_user->id_users)->first();
 
+            if (! $existingUser || (string) $existingUser->is_active !== '1' || (string) $data_user->is_active !== '1') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Akun anggota tidak aktif',
+                    'data' => 'pendaftaran ditolak',
+                ], 403);
+            }
 
-            $status = User::where('id', $data_user->id_users)->update([
+            $status = $existingUser->update([
                 'name' => $request->nama,
                 'email' => $request->email,
-                'is_active' => '1',
             ]);
 
             if($file_status){
@@ -238,7 +165,6 @@ class C_transaksi extends Controller
                     'pekerjaan' => $request->pekerjaan,
                     'tempat_lahir' => $request->tempat_lahir,
                     'foto' => $image_path,
-                    'is_active' => '1',
                 ]);
             }else{
                 $status = DataUser::where('id_users', $data_user->id_users)->update([
@@ -247,7 +173,6 @@ class C_transaksi extends Controller
                     'no_hp' => $request->nomer_telpon,
                     'pekerjaan' => $request->pekerjaan,
                     'tempat_lahir' => $request->tempat_lahir,
-                    'is_active' => '1',
                 ]);
             }
 
@@ -321,6 +246,8 @@ class C_transaksi extends Controller
 
     function verifikasiPendaftar(Request $request)
     {
+        Gate::forUser($request->user())->authorize('viewTransactions', Dashboard::class);
+
         $request->validate([
             'infak' => ['required'],
         ]);

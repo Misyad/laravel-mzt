@@ -51,6 +51,7 @@ class KtaPrintRequestTest extends TestCase
             'users',
         ]);
         $this->ensurePaymentEventPayloadHashUnique();
+        $this->seedActiveRoleCatalog(['anggota', 'dashboard', 'finance', 'id_card', 'ketua', 'admin']);
 
         config([
             'kta.enabled' => true,
@@ -75,10 +76,11 @@ class KtaPrintRequestTest extends TestCase
                 $t->string('password')->nullable();
                 $t->string('id_anggota')->nullable()->index();
                 $t->string('is_active')->default('1');
+                $t->timestamp('password_changed_at')->nullable();
                 $t->timestamps();
             });
         } else {
-            foreach (['id_anggota' => fn ($t) => $t->string('id_anggota')->nullable(), 'is_active' => fn ($t) => $t->string('is_active')->default('1')] as $col => $cb) {
+            foreach (['id_anggota' => fn ($t) => $t->string('id_anggota')->nullable(), 'is_active' => fn ($t) => $t->string('is_active')->default('1'), 'password_changed_at' => fn ($t) => $t->timestamp('password_changed_at')->nullable()] as $col => $cb) {
                 if (! Schema::hasColumn('users', $col)) {
                     Schema::table('users', fn ($table) => $cb($table));
                 }
@@ -209,7 +211,7 @@ class KtaPrintRequestTest extends TestCase
     private function repairSharedSchema(): void
     {
         if (Schema::hasTable('users')) {
-            foreach (['id_anggota' => fn ($t) => $t->string('id_anggota')->nullable(), 'is_active' => fn ($t) => $t->string('is_active')->default('1')] as $col => $cb) {
+            foreach (['id_anggota' => fn ($t) => $t->string('id_anggota')->nullable(), 'is_active' => fn ($t) => $t->string('is_active')->default('1'), 'password_changed_at' => fn ($t) => $t->timestamp('password_changed_at')->nullable()] as $col => $cb) {
                 if (! Schema::hasColumn('users', $col)) {
                     Schema::table('users', fn ($table) => $cb($table));
                 }
@@ -258,6 +260,7 @@ class KtaPrintRequestTest extends TestCase
         $u->password = bcrypt('secret');
         $u->id_anggota = $o['id_anggota'] ?? '0174011119';
         $u->is_active = $o['is_active'] ?? '1';
+        $u->password_changed_at = array_key_exists('password_changed_at', $o) ? $o['password_changed_at'] : now();
         $u->save();
 
         DataUser::create([
@@ -280,7 +283,10 @@ class KtaPrintRequestTest extends TestCase
 
     private function makeStaff(string $role): User
     {
-        $u = User::factory()->create(['is_active' => '1']);
+        $u = User::factory()->create([
+            'is_active' => '1',
+            'password_changed_at' => now(),
+        ]);
         HakAksesRole::create(['id_users' => $u->id, 'nama_role' => $role, 'hak_akses' => 'access']);
 
         return $u;
@@ -780,6 +786,23 @@ PHP;
         $this->getJson("/api/kta/cards/{$member->id}")->assertStatus(404);
     }
 
+    public function test_legacy_kta_print_requires_active_account_and_profile(): void
+    {
+        $member = $this->makeMember();
+        $this->actingAs($this->makeStaff('id_card'), 'web');
+
+        $this->get("/tabel-anggota/kta/{$member->id}")
+            ->assertSuccessful()
+            ->assertSee('Achmad Hasanudin');
+
+        DataUser::where('id_users', $member->id)->update(['is_active' => '0']);
+        $this->get("/tabel-anggota/kta/{$member->id}")->assertNotFound();
+
+        DataUser::where('id_users', $member->id)->update(['is_active' => '1']);
+        $member->forceFill(['is_active' => '0'])->save();
+        $this->get("/tabel-anggota/kta/{$member->id}")->assertNotFound();
+    }
+
     public function test_admin_queue_defaults_to_production_statuses_only(): void
     {
         $u = $this->makeMember();
@@ -915,6 +938,140 @@ PHP;
         $this->assertStringNotContainsString('0174011119', $body);
         $this->assertSame('A*** H***', $res->json('data.data.0.nama_masked'));
         $this->assertSame('MZT***119', $res->json('data.data.0.id_anggota_masked'));
+    }
+
+    public function test_own_status_requires_authentication(): void
+    {
+        $this->getJson('/api/me/kta/print-request')->assertStatus(401);
+    }
+
+    public function test_own_status_returns_null_when_user_has_no_request(): void
+    {
+        Sanctum::actingAs($this->makeMember());
+
+        $this->getJson('/api/me/kta/print-request')
+            ->assertStatus(200)
+            ->assertJson(['success' => true, 'data' => ['request' => null]])
+            ->assertHeader('Pragma', 'no-cache');
+    }
+
+    public function test_own_status_includes_payment_url_only_while_payment_is_pending(): void
+    {
+        $owner = $this->makeMember();
+        $pending = $this->makePending($owner->id, 'KTA-PENDING', 'IDP-PENDING');
+        $pending->forceFill(['pay_url' => 'https://paymenku.test/pay/pending'])->save();
+
+        Sanctum::actingAs($owner);
+        $this->getJson('/api/me/kta/print-request')
+            ->assertStatus(200)
+            ->assertJsonPath('data.request.reference', 'KTA-'.$pending->id)
+            ->assertJsonPath('data.request.pay_url', 'https://paymenku.test/pay/pending');
+    }
+
+    public function test_own_status_returns_latest_terminal_request_only_for_authenticated_user(): void
+    {
+        $owner = $this->makeMember();
+        $other = $this->makeMember([
+            'email' => 'other@example.test',
+            'id_anggota' => '0174011120',
+        ]);
+
+        $older = $this->makePending($owner->id, 'KTA-OLD', 'IDP-OLD');
+        $older->forceFill([
+            'status' => KtaPrintStatus::SELESAI->value,
+            'payment_status' => 'paid',
+            'pay_url' => 'https://paymenku.test/private-old',
+            'recipient_name' => 'Private Recipient',
+            'recipient_phone' => '081200000000',
+            'shipping_address' => 'Private Address',
+            'notes' => 'Private note',
+            'active_key' => null,
+            'completed_at' => now()->subMinute(),
+        ])->save();
+
+        $latest = KtaPrintRequest::create([
+            'id_users' => $owner->id,
+            'id_anggota_snapshot' => $owner->id_anggota,
+            'status' => KtaPrintStatus::DITOLAK->value,
+            'delivery_method' => 'delivery',
+            'payment_provider' => 'paymenku',
+            'payment_reference' => 'PRIVATE-REFERENCE',
+            'payment_trx_id' => 'PRIVATE-TRX',
+            'payment_amount' => 25000,
+            'payment_status' => 'failed',
+            'pay_url' => 'https://paymenku.test/private-latest',
+            'recipient_name' => 'Other Private Recipient',
+            'recipient_phone' => '081299999999',
+            'shipping_address' => 'Other Private Address',
+            'submitted_at' => now(),
+            'rejected_at' => now(),
+            'rejection_reason' => 'Foto tidak sesuai standar',
+            'notes' => 'Other private note',
+        ]);
+        $this->makePending($other->id, 'KTA-OTHER', 'IDP-OTHER');
+
+        Sanctum::actingAs($owner);
+        $response = $this->getJson('/api/me/kta/print-request')->assertStatus(200);
+        $request = $response->json('data.request');
+
+        $this->assertSame('KTA-'.$latest->id, $request['reference']);
+        $this->assertSame(KtaPrintStatus::DITOLAK->value, $request['status']);
+        $this->assertSame('Foto tidak sesuai standar', $request['rejection_reason']);
+        $this->assertSame([
+            'reference',
+            'status',
+            'delivery_method',
+            'payment_status',
+            'payment_amount',
+            'submitted_at',
+            'paid_at',
+            'printed_at',
+            'ready_at',
+            'shipped_at',
+            'completed_at',
+            'rejected_at',
+            'updated_at',
+            'rejection_reason',
+        ], array_keys($request));
+        $this->assertStringNotContainsString('PRIVATE-', $response->getContent());
+        $this->assertStringNotContainsString('Private Address', $response->getContent());
+        $cacheControl = (string) $response->headers->get('Cache-Control');
+        $this->assertStringContainsString('private', $cacheControl);
+        $this->assertStringContainsString('no-store', $cacheControl);
+        $this->assertStringContainsString('no-cache', $cacheControl);
+    }
+
+    public function test_own_status_ignores_identity_and_public_print_token_inputs(): void
+    {
+        $owner = $this->makeMember();
+        $other = $this->makeMember([
+            'email' => 'other@example.test',
+            'id_anggota' => '0174011120',
+        ]);
+        $owned = $this->makePending($owner->id, 'KTA-OWNER', 'IDP-OWNER');
+        $this->makePending($other->id, 'KTA-OTHER', 'IDP-OTHER');
+
+        Sanctum::actingAs($owner);
+        $this->getJson('/api/me/kta/print-request?id_users='.$other->id.'&print_token=invalid')
+            ->assertStatus(200)
+            ->assertJsonPath('data.request.reference', 'KTA-'.$owned->id);
+    }
+
+    public function test_own_status_rejects_inactive_and_forced_password_accounts(): void
+    {
+        $inactive = $this->makeMember(['is_active' => '0']);
+        Sanctum::actingAs($inactive);
+        $this->getJson('/api/me/kta/print-request')->assertStatus(401);
+
+        $forced = $this->makeMember([
+            'email' => 'forced@example.test',
+            'id_anggota' => '0174011121',
+            'password_changed_at' => null,
+        ]);
+        Sanctum::actingAs($forced);
+        $this->getJson('/api/me/kta/print-request')
+            ->assertStatus(428)
+            ->assertJsonPath('code', 'PASSWORD_CHANGE_REQUIRED');
     }
 
     // ─────────────────────────── public status ──────────────────────────────

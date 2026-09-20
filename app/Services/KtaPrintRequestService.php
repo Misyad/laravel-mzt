@@ -36,6 +36,14 @@ class KtaPrintRequestService
             ->first();
     }
 
+    public function latestForUser(int $userId): ?KtaPrintRequest
+    {
+        return KtaPrintRequest::query()
+            ->where('id_users', $userId)
+            ->latest('id')
+            ->first();
+    }
+
     /**
      * Create (or return the existing) active print request for a member.
      *

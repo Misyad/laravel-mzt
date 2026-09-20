@@ -46,6 +46,7 @@ class DashboardTest extends TestCase
         }
 
         $this->truncate(['orders', 'payments', 'tickets', 'users', 'hak_akses_role', 'personal_access_tokens']);
+        $this->seedActiveRoleCatalog(['dashboard', 'event', 'finance', 'ketua', 'admin']);
     }
 
     private function buildSchema(): void
@@ -66,6 +67,7 @@ class DashboardTest extends TestCase
             $table->string('is_active')->default('1');
             $table->timestamp('email_verified_at')->nullable();
             $table->string('remember_token')->nullable();
+            $table->timestamp('password_changed_at')->nullable();
             $table->timestamps();
         });
 
@@ -156,7 +158,7 @@ class DashboardTest extends TestCase
 
     private function makeUser(string $role): User
     {
-        $user = User::factory()->create();
+        $user = User::factory()->create(['password_changed_at' => now()]);
         HakAksesRole::create([
             'id_users' => $user->id,
             'nama_role' => $role,

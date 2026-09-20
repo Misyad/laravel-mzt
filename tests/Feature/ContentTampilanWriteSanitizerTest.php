@@ -60,6 +60,7 @@ class ContentTampilanWriteSanitizerTest extends TestCase
             'activitas_logs',
             'personal_access_tokens',
         ]);
+        $this->seedActiveRoleCatalog(['dashboard', 'tampilan']);
     }
 
     private function buildSchema(): void
@@ -82,6 +83,7 @@ class ContentTampilanWriteSanitizerTest extends TestCase
             $table->string('is_active')->default('1');
             $table->timestamp('email_verified_at')->nullable();
             $table->string('remember_token')->nullable();
+            $table->timestamp('password_changed_at')->nullable();
             $table->timestamps();
         });
 
@@ -172,7 +174,10 @@ class ContentTampilanWriteSanitizerTest extends TestCase
 
     private function makeUser(string $role, string $idAnggota): User
     {
-        $user = User::factory()->create(['id_anggota' => $idAnggota]);
+        $user = User::factory()->create([
+            'id_anggota' => $idAnggota,
+            'password_changed_at' => now(),
+        ]);
         HakAksesRole::create([
             'id_users' => $user->id,
             'nama_role' => $role,

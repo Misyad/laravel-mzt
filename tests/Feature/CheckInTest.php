@@ -47,6 +47,7 @@ class CheckInTest extends TestCase
             'users',
             'personal_access_tokens',
         ]);
+        $this->seedActiveRoleCatalog(['anggota', 'dashboard', 'event', 'finance', 'prisensi', 'ketua', 'admin']);
     }
 
     private function buildSchema(): void
@@ -69,6 +70,7 @@ class CheckInTest extends TestCase
             $table->string('is_active')->default('1');
             $table->timestamp('email_verified_at')->nullable();
             $table->string('remember_token')->nullable();
+            $table->timestamp('password_changed_at')->nullable();
             $table->timestamps();
         });
 
@@ -174,7 +176,7 @@ class CheckInTest extends TestCase
 
     private function makeUser(string $role): User
     {
-        $user = User::factory()->create();
+        $user = User::factory()->create(['password_changed_at' => now()]);
         HakAksesRole::create([
             'id_users' => $user->id,
             'nama_role' => $role,

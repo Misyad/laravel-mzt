@@ -69,6 +69,7 @@ class AuthHybridTest extends TestCase
             'data_users',
             'users',
         ]);
+        $this->seedActiveRoleCatalog(['anggota', 'admin']);
 
         $this->cookieJar = [];
     }
@@ -142,7 +143,10 @@ class AuthHybridTest extends TestCase
 
     private function makeUser(string $role, string $idAnggota, array $overrides = []): User
     {
-        $user = User::factory()->create(array_merge(['id_anggota' => $idAnggota], $overrides));
+        $user = User::factory()->create(array_merge([
+            'id_anggota' => $idAnggota,
+            'password_changed_at' => now(),
+        ], $overrides));
         HakAksesRole::create([
             'id_users' => $user->id,
             'nama_role' => $role,
@@ -179,6 +183,7 @@ class AuthHybridTest extends TestCase
     private function resetAuth(): void
     {
         app('auth')->forgetGuards();
+        app('auth')->shouldUse('web');
     }
 
     private function sessionCookieName(): string
@@ -302,9 +307,7 @@ class AuthHybridTest extends TestCase
 
         $fresh = $user->fresh();
         $this->assertSame(1, $fresh->login_count);
-        // NOTE: last_login is set in-memory on login but increment() performs an
-        // isolated column update, so it is not persisted (pre-existing behavior,
-        // untouched by R3). Only login_count is asserted here.
+        $this->assertNotNull($fresh->last_login);
     }
 
     /* ------------------------------------------------------ stateful session */
@@ -355,7 +358,7 @@ class AuthHybridTest extends TestCase
             ->getJson('/api/user')
             ->assertStatus(200)
             ->assertJsonPath('user.id', $user->id)
-            ->assertJsonPath('user.must_change_password', true);
+            ->assertJsonPath('user.must_change_password', false);
     }
 
     public function test_stateful_logout_destroys_the_session(): void

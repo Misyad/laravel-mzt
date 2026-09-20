@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\HakAksesRole;
+use App\Models\RoleUser;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
@@ -39,12 +40,17 @@ class LegacyGateTest extends TestCase
             self::$schemaBuilt = true;
         }
 
-        $this->truncate(['prisensi_kehadiran', 'm_transaksi_events', 'users', 'hak_akses_role', 'personal_access_tokens']);
+        $this->truncate(['prisensi_kehadiran', 'm_transaksi_events', 'users', 'hak_akses_role', 'role_user', 'personal_access_tokens']);
+
+        foreach (['anggota', 'dashboard', 'event', 'finance', 'prisensi', 'ketua', 'admin'] as $role) {
+            RoleUser::create(['nama_role' => $role, 'is_active' => '1']);
+        }
     }
 
     private function buildSchema(): void
     {
         Schema::dropIfExists('personal_access_tokens');
+        Schema::dropIfExists('role_user');
         Schema::dropIfExists('hak_akses_role');
         Schema::dropIfExists('prisensi_kehadiran');
         Schema::dropIfExists('m_transaksi_events');
@@ -59,6 +65,7 @@ class LegacyGateTest extends TestCase
             $table->string('is_active')->default('1');
             $table->timestamp('email_verified_at')->nullable();
             $table->string('remember_token')->nullable();
+            $table->timestamp('password_changed_at')->nullable();
             $table->timestamps();
         });
 
@@ -78,6 +85,13 @@ class LegacyGateTest extends TestCase
             $table->integer('id_users');
             $table->string('nama_role');
             $table->enum('hak_akses', ['access', 'no_accesss'])->default('access');
+            $table->timestamps();
+        });
+
+        Schema::create('role_user', function ($table) {
+            $table->id();
+            $table->string('nama_role');
+            $table->string('is_active')->default('1');
             $table->timestamps();
         });
 
@@ -128,7 +142,7 @@ class LegacyGateTest extends TestCase
 
     private function makeUser(string $role): User
     {
-        $user = User::factory()->create();
+        $user = User::factory()->create(['password_changed_at' => now()]);
         HakAksesRole::create([
             'id_users' => $user->id,
             'nama_role' => $role,

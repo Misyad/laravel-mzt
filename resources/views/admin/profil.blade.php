@@ -60,10 +60,6 @@
         <label for="foto" class="form-label">Foto</label>
         <input type="file" class="form-control" id="foto" name="foto">
       </div>
-      <div class="mb-3">
-        <label for="password" class="form-label">Password <span id="star_edit_2"></span></label>
-        <input type="password" class="form-control" id="password" name="password">
-      </div>
       <div class="mzt-text-right mzt-mt-4">
         <button type="submit" class="mzt-btn mzt-btn-primary mzt-btn-lg">Simpan</button>
       </div>

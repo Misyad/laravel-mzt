@@ -41,6 +41,7 @@ class OperationalTest extends TestCase
         }
 
         $this->truncate(['users', 'personal_access_tokens', 'hak_akses_role', 'events', 'prisensi_kehadiran', 'tickets']);
+        $this->seedActiveRoleCatalog(['dashboard', 'event', 'finance', 'ketua', 'admin']);
     }
 
     private function buildSchema(): void
@@ -61,6 +62,7 @@ class OperationalTest extends TestCase
             $table->string('id_anggota')->nullable()->index();
             $table->string('is_active')->default('1');
             $table->string('remember_token', 100)->nullable();
+            $table->timestamp('password_changed_at')->nullable();
             $table->timestamps();
         });
 
@@ -130,7 +132,7 @@ class OperationalTest extends TestCase
 
     private function makeUser(string $role): User
     {
-        $user = User::factory()->create();
+        $user = User::factory()->create(['password_changed_at' => now()]);
         HakAksesRole::create([
             'id_users' => $user->id,
             'nama_role' => $role,
@@ -424,7 +426,7 @@ class OperationalTest extends TestCase
 
         $this->getJson('/api/dashboard/operations/events')->assertStatus(200);
 
-        $this->assertLessThanOrEqual(3, count(DB::getQueryLog()));
+        $this->assertLessThanOrEqual(4, count(DB::getQueryLog()));
     }
 
     public function test_attendees_endpoint_query_count_is_constant(): void
@@ -443,6 +445,6 @@ class OperationalTest extends TestCase
 
         $this->getJson('/api/dashboard/operations/events/1/attendees')->assertStatus(200);
 
-        $this->assertLessThanOrEqual(4, count(DB::getQueryLog()));
+        $this->assertLessThanOrEqual(6, count(DB::getQueryLog()));
     }
 }

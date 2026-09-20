@@ -39,6 +39,7 @@ class ContentWriteSanitizerTest extends TestCase
         }
 
         $this->truncate(['events', 'beritas', 'users', 'hak_akses_role', 'data_users', 'activitas_logs', 'personal_access_tokens']);
+        $this->seedActiveRoleCatalog(['event', 'dashboard', 'berita']);
     }
 
     private function buildSchema(): void
@@ -60,6 +61,7 @@ class ContentWriteSanitizerTest extends TestCase
             $table->string('is_active')->default('1');
             $table->timestamp('email_verified_at')->nullable();
             $table->string('remember_token')->nullable();
+            $table->timestamp('password_changed_at')->nullable();
             $table->timestamps();
         });
 
@@ -153,7 +155,10 @@ class ContentWriteSanitizerTest extends TestCase
 
     private function makeUser(string $role, string $idAnggota): User
     {
-        $user = User::factory()->create(['id_anggota' => $idAnggota]);
+        $user = User::factory()->create([
+            'id_anggota' => $idAnggota,
+            'password_changed_at' => now(),
+        ]);
         HakAksesRole::create([
             'id_users' => $user->id,
             'nama_role' => $role,

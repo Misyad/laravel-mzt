@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\HakAksesRole;
+use App\Models\RoleUser;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
@@ -55,8 +56,10 @@ class AuthorizationMatrixTest extends TestCase
         }
 
         $this->truncate([
+            'sessions',
             'personal_access_tokens',
             'hak_akses_role',
+            'role_user',
             'data_users',
             'users',
             'prisensi_kehadiran',
@@ -66,6 +69,16 @@ class AuthorizationMatrixTest extends TestCase
             'carosels',
             'info_pesantrens',
             'tentang_mzts',
+        ]);
+
+        foreach (['anggota', 'profil', 'dashboard', 'event', 'finance', 'prisensi', 'ketua', 'admin'] as $role) {
+            RoleUser::create(['nama_role' => $role, 'is_active' => '1']);
+        }
+
+        config([
+            'session.driver' => 'database',
+            'session.connection' => null,
+            'session.table' => 'sessions',
         ]);
     }
 
@@ -79,8 +92,10 @@ class AuthorizationMatrixTest extends TestCase
         Schema::dropIfExists('events');
         Schema::dropIfExists('prisensi_kehadiran');
         Schema::dropIfExists('data_users');
+        Schema::dropIfExists('role_user');
         Schema::dropIfExists('hak_akses_role');
         Schema::dropIfExists('personal_access_tokens');
+        Schema::dropIfExists('sessions');
         Schema::dropIfExists('users');
 
         Schema::create('users', function ($table) {
@@ -107,11 +122,27 @@ class AuthorizationMatrixTest extends TestCase
             $table->timestamps();
         });
 
+        Schema::create('sessions', function ($table) {
+            $table->string('id')->primary();
+            $table->unsignedBigInteger('user_id')->nullable()->index();
+            $table->string('ip_address', 45)->nullable();
+            $table->text('user_agent')->nullable();
+            $table->longText('payload');
+            $table->integer('last_activity')->index();
+        });
+
         Schema::create('hak_akses_role', function ($table) {
             $table->id();
             $table->integer('id_users');
             $table->string('nama_role');
             $table->enum('hak_akses', ['access', 'no_accesss'])->default('access');
+            $table->timestamps();
+        });
+
+        Schema::create('role_user', function ($table) {
+            $table->id();
+            $table->string('nama_role');
+            $table->string('is_active')->default('1');
             $table->timestamps();
         });
 
@@ -221,7 +252,9 @@ class AuthorizationMatrixTest extends TestCase
 
     private function makeUser(string $role, array $attrs = []): User
     {
-        $user = User::factory()->create($attrs);
+        $user = User::factory()->create(array_merge([
+            'password_changed_at' => now(),
+        ], $attrs));
         HakAksesRole::create([
             'id_users' => $user->id,
             'nama_role' => $role,
@@ -265,11 +298,9 @@ class AuthorizationMatrixTest extends TestCase
     {
         $paths = [
             ['GET', '/api/members'],
-            ['POST', '/api/members'],
-            ['POST', '/api/members/bulk-account'],
-            ['POST', '/api/members/1/account'],
+            ['GET', '/api/members/account-reset-audit'],
             ['PUT', '/api/members/1/account'],
-            ['PUT', '/api/members/1/account/status'],
+            ['PUT', '/api/members/1/status'],
             ['GET', '/api/dashboard/stats'],
             ['GET', '/api/dashboard/calendar'],
             ['GET', '/api/dashboard/events'],
@@ -341,42 +372,32 @@ class AuthorizationMatrixTest extends TestCase
             'tahun_masuk' => '2015-06-01',
             'tahun_keluar' => '2019-06-01',
             'no_hp' => '081234567890',
-            'password' => 'rahasia123',
             'slug_suffix' => $slugSuffix,
         ];
     }
 
-    public function test_alumni_cannot_self_assign_roles_via_member_store(): void
+    public function test_removed_member_store_cannot_be_used_for_role_escalation(): void
     {
         $alumni = $this->makeAlumni();
-        $rolesBefore = HakAksesRole::where('id_users', $alumni->id)->count();
+        $rolesBefore = HakAksesRole::count();
         $usersBefore = User::count();
 
         Sanctum::actingAs($alumni);
         $payload = $this->memberPayload();
         $payload['roles'] = ['admin', 'dashboard'];
 
-        $this->postJson('/api/members', $payload)->assertStatus(403);
+        $this->postJson('/api/members', $payload)->assertStatus(405);
 
-        $this->assertSame(
-            $rolesBefore,
-            HakAksesRole::count(),
-            'no role rows may be created by a denied caller'
-        );
-        $this->assertSame($usersBefore, User::count(), 'no member must be created');
+        $this->assertSame($rolesBefore, HakAksesRole::count());
+        $this->assertSame($usersBefore, User::count());
     }
 
-    public function test_member_store_update_delete_are_ketua_admin_only(): void
+    public function test_member_store_is_unavailable_to_every_role(): void
     {
-        foreach (['dashboard', 'event', 'finance', 'prisensi', 'anggota'] as $role) {
+        foreach (['dashboard', 'event', 'finance', 'prisensi', 'anggota', 'ketua', 'admin'] as $role) {
             Sanctum::actingAs($this->makeUser($role));
-            $this->postJson('/api/members', $this->memberPayload())->assertStatus(403);
+            $this->postJson('/api/members', $this->memberPayload())->assertStatus(405);
         }
-
-        Sanctum::actingAs($this->makeUser('ketua'));
-        $this->postJson('/api/members', $this->memberPayload())
-            ->assertSuccessful()
-            ->assertJsonPath('success', true);
     }
 
     public function test_member_update_and_destroy_require_write_member(): void
@@ -396,67 +417,40 @@ class AuthorizationMatrixTest extends TestCase
         ]));
         $dbg->assertSuccessful();
 
-        $this->deleteJson("/api/members/{$target->id}")
-            ->assertSuccessful()
-            ->assertJsonPath('success', true);
+        $this->deleteJson("/api/members/{$target->id}")->assertStatus(405);
     }
 
     /* ------------------------------------- D/E/F/G. Account lifecycle (admin) */
 
     public function test_account_lifecycle_is_ketua_admin_only(): void
     {
-        $member = $this->makeAlumni(); // has account -> reset/status apply
-        $profileId = $this->makeMemberData(); // no linked user -> generate applies
+        $member = $this->makeAlumni();
+        $this->makeMemberData($member->id);
 
         foreach (['dashboard', 'event', 'prisensi', 'anggota'] as $role) {
             Sanctum::actingAs($this->makeUser($role));
 
-            $this->postJson('/api/members/bulk-account')->assertStatus(403);
-            $this->postJson("/api/members/{$profileId}/account")->assertStatus(403);
-            $this->putJson("/api/members/{$member->id}/account")->assertStatus(403);
-            $this->putJson("/api/members/{$member->id}/account/status", ['is_active' => '0'])
+            $this->getJson('/api/members/account-reset-audit')->assertStatus(403);
+            $this->putJson("/api/members/{$member->id}/account", [
+                'confirm' => true,
+                'confirmation_id_anggota' => $member->id_anggota,
+            ])->assertStatus(403);
+            $this->putJson("/api/members/{$member->id}/status", ['is_active' => '0'])
                 ->assertStatus(403);
         }
     }
 
-    public function test_authorized_admin_can_run_full_account_lifecycle(): void
+    public function test_account_creation_routes_are_removed(): void
     {
         Sanctum::actingAs($this->makeUser('ketua'));
 
-        // Contract: {id} lives in the USERS id space; seed an unlinked profile
-        // whose id_users points at an unused user-id slot.
-        $linkId = random_int(500_000, 999_999);
-        $this->makeMemberData($linkId);
+        $usersBefore = User::count();
+        $profileId = $this->makeMemberData();
 
-        $this->postJson("/api/members/{$linkId}/account")
-            ->assertSuccessful()
-            ->assertJsonPath('success', true);
-
-        $member = $this->makeAlumni();
-
-        $dR = $this->putJson("/api/members/{$member->id}/account");
-        $dR->assertSuccessful()->assertJsonPath('success', true);
-
-        $this->putJson("/api/members/{$member->id}/account/status", ['is_active' => '0'])
-            ->assertSuccessful()
-            ->assertJsonPath('success', true);
-    }
-
-    public function test_ketua_bulk_generation_creates_accounts_for_unlinked_profiles(): void
-    {
-        $profileId = $this->makeMemberData(); // no linked user
-        $before = User::count();
-
-        Sanctum::actingAs($this->makeUser('ketua'));
-
-        $bulk = $this->postJson('/api/members/bulk-account');
-        $bulk->assertSuccessful()->assertJsonPath('success', true);
-
-        $this->assertGreaterThan($before, User::count());
-
-        // The generated account must be linked back to that profile.
-        $linked = DB::table('data_users')->where('id', $profileId)->value('id_users');
-        $this->assertNotNull(DB::table('users')->where('id', $linked)->first());
+        $this->postJson('/api/members')->assertStatus(405);
+        $this->postJson('/api/members/bulk-account')->assertStatus(404);
+        $this->postJson("/api/members/{$profileId}/account")->assertStatus(405);
+        $this->assertSame($usersBefore, User::count());
     }
 
     /* --------------------------------------------- H. Legacy dashboard reads */
@@ -677,27 +671,26 @@ class AuthorizationMatrixTest extends TestCase
 
     public function test_deactivated_account_loses_api_access_immediately_and_others_unaffected(): void
     {
-        // Staff whose access will be revoked mid-session.
-        $victim = $this->makeUser('finance', ['id_anggota' => (string) random_int(100_000, 999_999)]);
-        $bystander = $this->makeUser('finance', ['id_anggota' => (string) random_int(100_000, 999_999)]);
+        $victim = $this->makeAlumni();
+        $bystander = $this->makeAlumni();
+        $this->makeMemberData($victim->id);
+        $this->makeMemberData($bystander->id);
 
         $victimToken = $victim->createToken('pat-victim')->plainTextToken;
         $bystanderToken = $bystander->createToken('pat-bystander')->plainTextToken;
 
-        // 3. both succeed while active
         app('auth')->forgetGuards();
         $g1 = $this->withHeader('Authorization', "Bearer {$victimToken}")
-            ->getJson('/api/members');
+            ->getJson('/api/user');
         $g1->assertSuccessful();
 
         app('auth')->forgetGuards();
         $g2 = $this->withHeader('Authorization', "Bearer {$bystanderToken}")
-            ->getJson('/api/members');
+            ->getJson('/api/user');
         $g2->assertSuccessful();
 
-        // 4. deactivate ONLY the victim through the real admin endpoint
         Sanctum::actingAs($this->makeUser('ketua'));
-        $this->putJson("/api/members/{$victim->id}/account/status", ['is_active' => '0'])
+        $this->putJson("/api/members/{$victim->id}/status", ['is_active' => '0'])
             ->assertSuccessful();
 
         // Drop the admin actingAs context so subsequent requests authenticate
@@ -723,13 +716,13 @@ class AuthorizationMatrixTest extends TestCase
         ]);
         app('auth')->forgetGuards();
         $g3 = $this->withHeader('Authorization', "Bearer {$raw}")
-            ->getJson('/api/members');
+            ->getJson('/api/user');
         $g3->assertStatus(401);
 
         // 7. bystander remains fully operational.
         app('auth')->forgetGuards();
         $g4 = $this->withHeader('Authorization', "Bearer {$bystanderToken}")
-            ->getJson('/api/members');
+            ->getJson('/api/user');
         $rows = DB::table('users')->orderBy('id')->get(['id', 'is_active'])->toJson();
         $g4->assertSuccessful();
     }

@@ -15,15 +15,9 @@ use Carbon\Carbon;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use App\Models\DataUser;
-use App\Models\HakAksesRole;
-use DNS1D;
-use Illuminate\Support\Facades\Storage;
-use Image;
-use Illuminate\Support\Facades\Hash;
 use App\Models\Transaksi_event;
 use DataPicker;
 use Illuminate\Support\Facades\File;
-use GuzzleHttp\Client;
 use Illuminate\Support\Facades\Validator;
 
 class HomeViews extends Controller
@@ -157,128 +151,37 @@ class HomeViews extends Controller
             'foto' => ['image', 'mimes:jpg,png,jpeg,gif,svg', 'max:1048'],
         ]);
 
-        $jml = User::count();
-        $jml2 = $jml + 1;
-        $paddedNumber = str_pad($jml2, 4, "0", STR_PAD_LEFT);
-        $tahun = substr(date("Y", strtotime($request->tanggal_lahir)), -2);
-        $tahun_masuk = substr(date("Y", strtotime($request->tahun_masuk)), -2);
-        $tahun_keluar = substr(date("Y", strtotime($request->tahun_keluar)), -2);
-        $id_anggota = $paddedNumber . $tahun . $tahun_masuk . $tahun_keluar;
-
         // ini untuk id transaksi
         $timestamp = now()->format('ymd'); // Mengambil tanggal dalam format YYMMDD
         $randomNumber = str_pad(mt_rand(0, 9999), 4, '0', STR_PAD_LEFT); // Menghasilkan angka acak 4 digit dengan leading zero jika diperlukan
         $id_transaksi = $timestamp . $randomNumber;
 
-        $data_tlp = DataUser::where(['no_hp' => $request->nomer_telpon])->count();
-        $file_status = $_FILES["foto"]["name"];
+        $file_status = $request->hasFile('foto');
+        $data_user = DataUser::join('users', 'users.id', '=', 'data_users.id_users')
+            ->select('data_users.*', 'users.name', 'users.id_anggota', 'users.id as id_users', 'users.is_active as user_is_active')
+            ->where('data_users.no_hp', $request->nomer_telpon)
+            ->first();
 
-        if (($data_tlp == 0)) {
-
-            $barcode = \DNS1D::getBarcodePNG($id_anggota, 'C39');
-            $filename = 'barcode-' . $id_anggota . '.png';
-            $image_path_barcode = 'image/barcode/' . $filename;
-            Storage::disk('public')->put('image/barcode/' . $filename, base64_decode($barcode));
-            $id = User::insertGetId([
-                'id_anggota' => $id_anggota,
-                'name' => $request->nama,
-                'email' => $request->email,
-                'password' => Hash::make($id_anggota),
-            ]);
-            if ($file_status) {
-
-                $image_path = $request->file('foto')->store('image/anggota', 'public');
-                $image = Image::make(storage_path('app/public/' . $image_path));
-                $image->resize(300, 400); // Mengubah ukuran gambar
-                $image->save();
-
-                $status = DataUser::insert([
-                    'id_users' => $id,
-                    'barcode' => $image_path_barcode,
-                    'alamat' => $request->alamat,
-                    'niqobah' => $request->niqobah,
-                    'no_hp' => $request->nomer_telpon,
-                    'pekerjaan' => $request->pekerjaan,
-                    'tempat_lahir' => $request->tempat_lahir,
-                    'tanggal_lahir' => date("Y-m-d", strtotime($request->tanggal_lahir)),
-                    'tahun_masuk' => date("Y-m-d", strtotime($request->tahun_masuk)),
-                    'tahun_keluar' => date("Y-m-d", strtotime($request->tahun_keluar)),
-                    'foto' => $image_path,
-                ]);
-            } else {
-                    DataUser::insert([
-                    'id_users' => $id,
-                    'barcode' => $image_path_barcode,
-                    'alamat' => $request->alamat,
-                    'niqobah' => $request->niqobah,
-                    'no_hp' => $request->nomer_telpon,
-                    'pekerjaan' => $request->pekerjaan,
-                    'tempat_lahir' => $request->tempat_lahir,
-                    'tanggal_lahir' => date("Y-m-d", strtotime($request->tanggal_lahir)),
-                    'tahun_masuk' => date("Y-m-d", strtotime($request->tahun_masuk)),
-                    'tahun_keluar' => date("Y-m-d", strtotime($request->tahun_keluar)),
-                ]);
-            }
-            if(!($request->infak == null)){
-                $snapToken = $this->midtransShow($request, $hargaTotal,$request->id_event,);
-                   Transaksi_event::insert([
-                    'id_event'          => $request->id_event,
-                    'id_anggota'        => $id_anggota,
-                    'snaptoken'         => $snapToken,
-                    'order_id'          => $id_transaksi,
-                    'created_at'        => date("Y-m-d H:i:s"),
-                    'updated_at'        => date("Y-m-d H:i:s"),
-                ]);
-
-                return response()->json([
-                    'success' => true,
-                    'message' => 'pendaftaran  berhasil!!',
-                    'data'    => [
-                        'snap' => $snapToken,
-                        'id_anggota' => $id_anggota,
-                    ]
-                ], 200);
-            }else{
-                $message = "🔵 Pembayaran Anda Pending!\n\n"
-                . "Segera lakukan pembayaran. Berikut adalah rincian transaksi Anda:\n\n"
-                . "➡ Id Anggota: $id_anggota\n"
-                . "➡ Nama : $request->nama\n"
-                . "➡ Id Transaksi: $id_transaksi\n"
-                . "Semua informasi tersebut telah dicatat dan diverifikasi. Harap simpan nomor referensi ini untuk referensi Anda. Jika Anda memiliki pertanyaan atau perlu bantuan lebih lanjut, hubungi kami di 088217784280.\n\n"
-                . "Salam,\n"
-                . "Maziltu Tholiban";
-
-                DataPicker::sendWa($request->nomer_telpon, $message);
-
-                 Transaksi_event::insert([
-                    'id_event'          => $request->id_event,
-                    'id_anggota'        => $id_anggota,
-                    'order_id'          => $id_transaksi,
-                    'transaction_status'=> 'offline',
-                    'created_at'        => date("Y-m-d H:i:s"),
-                    'updated_at'        => date("Y-m-d H:i:s"),
-                ]);
-                return response()->json([
-                    'success' => true,
-                    'message' => 'pendaftaran  berhasil!!',
-                    'body'    => 'Segera lakukan pembayaran di admin/panitia',
-                    'data'    => 'null'
-                ], 200);
-            }
-
-
+        if (! $data_user) {
+            return response()->json([
+                'success' => false,
+                'code' => 'EXISTING_MEMBER_REQUIRED',
+                'message' => 'Pendaftaran hanya tersedia untuk akun anggota yang sudah ada.',
+            ], 422);
         } else {
-
-
-            $data_user = DataUser::join('users', 'users.id', '=', 'data_users.id_users')
-                ->select('data_users.*', 'users.name', 'users.id_anggota', 'users.id as id_users')
-                ->where('data_users.no_hp', $request->nomer_telpon)->first();
             $statusPendaftaran = Transaksi_event::where(['id_anggota' => $data_user->id_anggota, 'id_event' => $request->id_event]);
+
+            if ((string) $data_user->user_is_active !== '1' || (string) $data_user->is_active !== '1') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Akun anggota tidak aktif',
+                    'data' => 'pendaftaran ditolak',
+                ], 403);
+            }
 
             $status = User::where('id', $data_user->id_users)->update([
                 'name' => $request->nama,
                 'email' => $request->email,
-                'is_active' => '1',
             ]);
 
             if($file_status){
@@ -295,7 +198,6 @@ class HomeViews extends Controller
                     'pekerjaan' => $request->pekerjaan,
                     'tempat_lahir' => $request->tempat_lahir,
                     'foto' => $image_path,
-                    'is_active' => '1',
                 ]);
             }else{
                 $status = DataUser::where('id_users', $data_user->id_users)->update([
@@ -304,7 +206,6 @@ class HomeViews extends Controller
                     'no_hp' => $request->nomer_telpon,
                     'pekerjaan' => $request->pekerjaan,
                     'tempat_lahir' => $request->tempat_lahir,
-                    'is_active' => '1',
                 ]);
             }
 

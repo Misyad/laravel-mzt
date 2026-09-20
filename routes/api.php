@@ -16,6 +16,7 @@ use App\Http\Controllers\Public\KtaPrintRequestController as PublicKtaPrintReque
 use App\Http\Controllers\Public\PaymenkuWebhookController;
 use App\Http\Controllers\KtaPrintRequestController as AdminKtaPrintRequestController;
 use App\Http\Controllers\KtaCardController;
+use App\Http\Controllers\OwnKtaPrintRequestController;
 use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 
 /*
@@ -57,24 +58,21 @@ Route::post('/public/contact', [ApiController::class, 'contactStore']);
 // Protected routes (require Sanctum token + an ACTIVE account per request).
 Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
 
-// Auth
     Route::get('/user', [ApiController::class, 'user']);
+    Route::get('/me', [ApiController::class, 'me']);
+    Route::put('/password', [ApiController::class, 'changePassword']);
     Route::post('/logout', [ApiController::class, 'logout']);
 
-    // Phase 1 — Alumni digital identity
-    Route::get('/me', [ApiController::class, 'me']);
-    Route::get('/profile', [ApiController::class, 'profileGet']);
-    Route::put('/profile', [ApiController::class, 'profileUpdateJson']);
-    Route::put('/password', [ApiController::class, 'changePassword']);
-    Route::get('/id-card', [ApiController::class, 'idCard']);
+    Route::middleware('password-changed')->group(function () {
+        Route::get('/profile', [ApiController::class, 'profileGet']);
+        Route::put('/profile', [ApiController::class, 'profileUpdateJson']);
+        Route::get('/id-card', [ApiController::class, 'idCard']);
+        Route::get('/me/kta/print-request', [OwnKtaPrintRequestController::class, 'show']);
 
-    // Account management
-    // NOTE: the literal /members/bulk-account MUST be declared before
-    // /members/{id} so it is not captured by the parameter route.
-    Route::post('/members/bulk-account', [ApiController::class, 'bulkGenerate']);
-    Route::post('/members/{id}/account', [ApiController::class, 'generateAccount']);
-    Route::put('/members/{id}/account', [ApiController::class, 'resetAccount']);
-    Route::put('/members/{id}/account/status', [ApiController::class, 'setAccountStatus']);
+        Route::get('/members/account-reset-audit', [ApiController::class, 'accountResetAudit']);
+        Route::put('/members/{id}/account', [ApiController::class, 'resetAccount'])->whereNumber('id');
+        Route::put('/members/{id}/status', [ApiController::class, 'setAccountStatus'])->whereNumber('id');
+        Route::put('/members/{id}/account/status', [ApiController::class, 'setAccountStatus'])->whereNumber('id');
 
 // Dashboard
     Route::get('/dashboard/stats', [ApiController::class, 'dashboardStats']);
@@ -93,10 +91,8 @@ Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
 
     // Members
     Route::get('/members', [ApiController::class, 'membersIndex']);
-    Route::get('/members/{id}', [ApiController::class, 'membersShow']);
-    Route::post('/members', [ApiController::class, 'membersStore']);
-    Route::post('/members/{id}', [ApiController::class, 'membersUpdate']);
-    Route::delete('/members/{id}', [ApiController::class, 'membersDestroy']);
+    Route::get('/members/{id}', [ApiController::class, 'membersShow'])->whereNumber('id');
+    Route::post('/members/{id}', [ApiController::class, 'membersUpdate'])->whereNumber('id');
 
     // Events
     Route::get('/events', [ApiController::class, 'eventsIndex']);
@@ -181,6 +177,7 @@ Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
     Route::get('/kta/cards', [KtaCardController::class, 'index']);
     Route::get('/kta/cards/{id}', [KtaCardController::class, 'show']);
 
-    // Profile
-    Route::post('/profile', [ApiController::class, 'profileUpdate']);
+        // Profile
+        Route::post('/profile', [ApiController::class, 'profileUpdate']);
+    });
 });

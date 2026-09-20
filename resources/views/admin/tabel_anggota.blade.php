@@ -11,11 +11,6 @@
     <h1>Anggota</h1>
     <div class="description">Tabel Anggota</div>
   </div>
-  <div class="actions">
-    <button type="button" class="mzt-btn mzt-btn-primary" data-toggle="modal" id="btn_tambah">
-      <i class="fas fa-plus"></i> Tambah Anggota
-    </button>
-  </div>
 </div>
 
 <div class="mzt-card">
@@ -90,10 +85,6 @@
             <label for="foto" class="form-label">Foto <a id="star_edit_2"></a></label>
             <input type="file" class="form-control" id="foto" name="foto" accept="image/*">
           </div>
-          <div class="mb-3">
-            <label for="password" class="form-label">password  <a id="star_edit"></a></label>
-            <input type="password" class="form-control" id="password" name="password">
-          </div>
           <div class="row" id="hak_akses">
             @php $no = 1; @endphp
             @foreach ($roles as $item)
@@ -127,8 +118,6 @@
 
 <script>
 $(document).ready(function() {
-  var aksi_status = true;
-
   $('#foto').change(function(e){
     var input = this;
     if (input.files && input.files[0]) {
@@ -151,7 +140,7 @@ $(document).ready(function() {
     aoColumnDefs: [{
       targets: 6, data: 'id',
       "render": function(data, catatan, row) {
-        return '<a class="" href="#" id="btn_edit" data-id="'+row.id+'" data-nama="'+row.nama+'" data-email="'+row.email+'" data-alamat="'+row.alamat+'" data-niqobah="'+row.niqobah+'" data-pekerjaan="'+row.pekerjaan+'" data-tanggal_lahir="'+row.tanggal_lahir+'" data-tahun_masuk="'+row.tahun_masuk+'" data-tahun_keluar="'+row.tahun_keluar+'" data-no_hp="'+row.no_hp+'" data-foto="'+row.foto+'" data-barcode="'+row.barcode+'" data-id_users="'+row.id_users+'" data-password="'+row.password+'" data-foto_lama="'+row.foto+'" data-roles_count="{{$roles_count}}"><i class="fas fa-edit"></i></a> <a class="" href="#" id="btn_deleted" data-id="'+row.id+'"><i class="fas fa-trash"></i></a> <a class="" href="/tabel-anggota/kta/'+row.id_users+'"><i class="far fa-arrow-alt-circle-right"></i></a>';
+        return '<a class="" href="#" id="btn_edit" data-id="'+row.id+'" data-nama="'+row.nama+'" data-email="'+row.email+'" data-alamat="'+row.alamat+'" data-niqobah="'+row.niqobah+'" data-pekerjaan="'+row.pekerjaan+'" data-tanggal_lahir="'+row.tanggal_lahir+'" data-tahun_masuk="'+row.tahun_masuk+'" data-tahun_keluar="'+row.tahun_keluar+'" data-no_hp="'+row.no_hp+'" data-foto="'+row.foto+'" data-barcode="'+row.barcode+'" data-id_users="'+row.id_users+'" data-foto_lama="'+row.foto+'" data-roles_count="{{$roles_count}}"><i class="fas fa-edit"></i></a> <a class="" href="/tabel-anggota/kta/'+row.id_users+'"><i class="far fa-arrow-alt-circle-right"></i></a>';
       }
     }],
     dom: 'Bfrtip',
@@ -160,7 +149,6 @@ $(document).ready(function() {
 
   $('#tabel_anggota tbody').on('click', '#btn_edit', function(e) {
     e.preventDefault();
-    aksi_status = false;
     var id = this.getAttribute('data-id');
     var nama = this.getAttribute('data-nama');
     var email = this.getAttribute('data-email');
@@ -174,7 +162,6 @@ $(document).ready(function() {
     var foto = this.getAttribute('data-foto');
     var barcode = this.getAttribute('data-barcode');
     var id_users = this.getAttribute('data-id_users');
-    var password = this.getAttribute('data-password');
     var foto_lama = this.getAttribute('data-foto_lama');
 
     $('#id_users').val(id_users);
@@ -190,54 +177,27 @@ $(document).ready(function() {
     $('#no_hp').val(no_hp);
     $('#foto_lama').val(foto_lama);
     $('#img_view').attr('src', '/storage/' + foto);
-    $(`#star_edit`).html(`<a style="color:red">*</a>`);
     $(`#star_edit_2`).html(``);
     dataAkses(id_users);
     $('#modal_anggota').modal('show');
   });
 
-  $('#btn_tambah').click(function(e){
-    e.preventDefault();
-    aksi_status = true;
-    $(`#star_edit`).html(`<a style="color:red">*</a>`);
-    $(`#star_edit_2`).html(`<a style="color:red">*</a>`);
-    $('#modal_anggota').modal('show');
-    clearData();
-  });
-
   $('#form_anggota').submit(function(e){
     e.preventDefault();
     var data = new FormData(this);
-    data.append('aksi', aksi_status);
-    if(aksi_status){
-      $.ajax({
-        url: "/tabel-anggota/store",
-        method: "POST",
-        data: data,
-        processData: false,
-        contentType: false,
-        success: function(data) {
-          table.ajax.reload();
-          $('#modal_anggota').modal('hide');
-          Toast.fire({icon:'success',title:'Simpan Berhasil'});
-        },
-        error: function(data){ Toast.fire({icon:'error',title:data['responseJSON']['message']}); }
-      });
-    } else {
-      $.ajax({
-        url: "/tabel-anggota/edit",
-        method: "POST",
-        data: data,
-        processData: false,
-        contentType: false,
-        success: function(data) {
-          table.ajax.reload();
-          $('#modal_anggota').modal('hide');
-          Toast.fire({icon:'success',title:'Simpan Berhasil'});
-        },
-        error: function(data){ Toast.fire({icon:'error',title:data['responseJSON']['message']}); }
-      });
-    }
+    $.ajax({
+      url: "/tabel-anggota/edit",
+      method: "POST",
+      data: data,
+      processData: false,
+      contentType: false,
+      success: function(data) {
+        table.ajax.reload();
+        $('#modal_anggota').modal('hide');
+        Toast.fire({icon:'success',title:'Simpan Berhasil'});
+      },
+      error: function(data){ Toast.fire({icon:'error',title:data['responseJSON']['message']}); }
+    });
   });
 
   function dataAkses(id) {
@@ -258,53 +218,6 @@ $(document).ready(function() {
     });
   }
 
-  $('#tabel_anggota tbody').on('click', '#btn_deleted', function(e) {
-    e.preventDefault();
-    var id = this.getAttribute('data-id');
-    Swal.fire({
-      title: 'Apa kamu yakin ingin hapus data ini?',
-      text: "Data akan hilang setelah dihapus!",
-      icon: 'warning',
-      showCancelButton: true,
-      confirmButtonColor: '#3085d6',
-      cancelButtonColor: '#d33',
-      confirmButtonText: 'Ya hapus data ini!'
-    }).then((result) => {
-      if (result.isConfirmed) {
-        $.ajax({
-          url: "/tabel-anggota/hapus",
-          method: "POST",
-          headers: { 'X-CSRF-TOKEN': $('meta[name="csrf-token"]').attr('content') },
-          data: {'id': id},
-          success: function(data) {
-            table.ajax.reload();
-            Toast.fire({icon:'success',title:'Berhasil hapus data'});
-          },
-          error: function(data, exception){ Toast.fire({icon:'error',title:exception}); }
-        });
-      }
-    });
-  });
-
-  function clearData(){
-    var length = {{$roles_count}};
-    for (let index = 1; index <= length; index++) {
-      $(`#roles_${index}`).prop("checked", false);
-      $(`#roles_${index}`).trigger("click");
-    }
-    $('#nama').val('');
-    $('#email').val('');
-    $('#alamat').val('');
-    $('#niqobah').val('');
-    $('#tanggal_lahir').val('');
-    $('#tahun_masuk').val('');
-    $('#tahun_keluar').val('');
-    $('#foto').val('');
-    $('#password').val('');
-    $('#img_view').attr('src','/storage/');
-    $('#no_hp').val('');
-    $('#pekerjaan').val('');
-  }
 });
 </script>
 @endsection

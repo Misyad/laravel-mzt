@@ -4,9 +4,7 @@ namespace App\Http\Controllers\admin;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
-use App\Models\User;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Validator;
 
 class Login extends Controller
 {
@@ -21,12 +19,23 @@ class Login extends Controller
             'password' => ['required'],
         ]);
 
-        if (Auth::attempt($credentials)) {
-            $request->session()->regenerate();
-            return redirect()->intended('/dashboard');
+        if (! Auth::attempt([
+            'id_anggota' => $credentials['id_anggota'],
+            'password' => $credentials['password'],
+            'is_active' => '1',
+        ])) {
+            return redirect('/login');
         }
 
-        return redirect('/login');
+        $request->session()->regenerate();
+        $request->session()->put('password_hash_web', Auth::user()->getAuthPassword());
+
+        Auth::user()->forceFill([
+            'last_login' => now(),
+            'login_count' => ((int) Auth::user()->login_count) + 1,
+        ])->save();
+
+        return redirect()->intended('/dashboard');
     }
 
     function logout(Request $request)

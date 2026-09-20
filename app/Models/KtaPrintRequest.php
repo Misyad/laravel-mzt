@@ -96,4 +96,33 @@ class KtaPrintRequest extends Model
             'rejection_reason' => $this->rejection_reason,
         ];
     }
+
+    public function toMemberArray(): array
+    {
+        $data = [
+            'reference' => 'KTA-' . $this->id,
+            'status' => $this->status,
+            'delivery_method' => $this->delivery_method,
+            'payment_status' => $this->payment_status,
+            'payment_amount' => $this->payment_amount,
+            'submitted_at' => optional($this->submitted_at)->toIso8601String(),
+            'paid_at' => optional($this->paid_at)->toIso8601String(),
+            'printed_at' => optional($this->printed_at)->toIso8601String(),
+            'ready_at' => optional($this->ready_at)->toIso8601String(),
+            'shipped_at' => optional($this->shipped_at)->toIso8601String(),
+            'completed_at' => optional($this->completed_at)->toIso8601String(),
+            'rejected_at' => optional($this->rejected_at)->toIso8601String(),
+            'updated_at' => optional($this->updated_at)->toIso8601String(),
+        ];
+
+        if ($this->status === KtaPrintStatus::MENUNGGU_PEMBAYARAN->value && $this->payment_status === 'pending') {
+            $data['pay_url'] = $this->pay_url;
+        }
+
+        if ($this->status === KtaPrintStatus::DITOLAK->value) {
+            $data['rejection_reason'] = $this->rejection_reason;
+        }
+
+        return $data;
+    }
 }

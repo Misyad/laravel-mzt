@@ -49,6 +49,10 @@ class RouteServiceProvider extends ServiceProvider
             return Limit::perMinute(60)->by($request->user()?->id ?: $request->ip());
         });
 
+        RateLimiter::for('legacy-login', function (Request $request) {
+            return Limit::perMinute(5)->by(strtolower((string) $request->input('id_anggota')).'|'.$request->ip());
+        });
+
         // Public "Cek Status KTA" — unauthenticated, so key strictly by IP.
         RateLimiter::for('kta-check', function (Request $request) {
             return Limit::perMinute((int) config('kta.rate_limit.check', 5))->by($request->ip());

@@ -36,9 +36,13 @@ class RegistrationConcurrencyTest extends TestCase
             if (!\Illuminate\Support\Facades\Schema::hasColumn('users', 'is_active')) {
                 \Illuminate\Support\Facades\Schema::table('users', fn ($t) => $t->string('is_active')->default('1'));
             }
+            if (!\Illuminate\Support\Facades\Schema::hasColumn('users', 'password_changed_at')) {
+                \Illuminate\Support\Facades\Schema::table('users', fn ($t) => $t->timestamp('password_changed_at')->nullable());
+            }
             self::$schemaBuilt = true;
         }
         $this->truncate(['orders','tickets','ticket_logs','payments','payment_logs','events','hak_akses_role','personal_access_tokens','users']);
+        $this->seedActiveRoleCatalog(['anggota']);
     }
 
     private function truncate(array $tables): void
@@ -50,7 +54,7 @@ class RegistrationConcurrencyTest extends TestCase
 
     private function makeUser(string $idAnggota): User
     {
-        $u = User::factory()->create(['id_anggota'=>$idAnggota, 'is_active'=>'1']);
+        $u = User::factory()->create(['id_anggota'=>$idAnggota, 'is_active'=>'1', 'password_changed_at' => now()]);
         HakAksesRole::create(['id_users'=>$u->id,'nama_role'=>'anggota','hak_akses'=>'access']);
         return $u;
     }

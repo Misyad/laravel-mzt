@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use App\Models\User;
 use App\Models\DataUser;
@@ -32,6 +33,7 @@ use App\Support\Dashboard;
 use App\Support\MemberManagement;
 use App\Support\Content;
 use App\Support\HtmlSanitizer;
+use App\Support\RoleGuard;
 
 class ApiController extends Controller
 {
@@ -59,15 +61,12 @@ class ApiController extends Controller
             ]);
         }
 
-        // Audit login (only on successful authentication).
-        $user->last_login = now();
+        $user->forceFill(['last_login' => now()])->save();
         $user->increment('login_count');
+        $user->refresh();
 
-        // Get user data
         $userData = DataUser::where('id_users', $user->id)->first();
-
-        // Get roles
-        $roles = HakAksesRole::where('id_users', $user->id)->pluck('nama_role')->toArray();
+        $roles = RoleGuard::roles($user);
 
         $userPayload = [
             'id' => $user->id,
@@ -76,7 +75,7 @@ class ApiController extends Controller
             'email' => $user->email,
             'roles' => $roles,
             'foto' => $userData ? $userData->foto : null,
-            'must_change_password' => empty($user->password_changed_at),
+            'must_change_password' => $user->password_changed_at === null,
         ];
 
         // First-party browser (Sanctum stateful) request: establish a HttpOnly
@@ -84,6 +83,7 @@ class ApiController extends Controller
         if ($request->attributes->get('sanctum')) {
             Auth::guard('web')->login($user);
             $request->session()->regenerate();
+            $request->session()->put('password_hash_web', $user->getAuthPassword());
 
             return response()->json([
                 'success' => true,
@@ -126,7 +126,7 @@ class ApiController extends Controller
     {
         $user = $request->user();
         $userData = DataUser::where('id_users', $user->id)->first();
-        $roles = HakAksesRole::where('id_users', $user->id)->pluck('nama_role')->toArray();
+        $roles = RoleGuard::roles($user);
 
         return response()->json([
             'success' => true,
@@ -138,7 +138,7 @@ class ApiController extends Controller
                 'roles' => $roles,
                 'foto' => $userData ? $userData->foto : null,
                 'data' => $userData,
-                'must_change_password' => empty($user->password_changed_at),
+                'must_change_password' => $user->password_changed_at === null,
             ],
         ]);
     }
@@ -149,7 +149,7 @@ class ApiController extends Controller
     public function me(Request $request)
     {
         $user = $request->user();
-        $roles = HakAksesRole::where('id_users', $user->id)->pluck('nama_role')->toArray();
+        $roles = RoleGuard::roles($user);
         $userData = DataUser::where('id_users', $user->id)->first();
 
         return response()->json([
@@ -161,7 +161,7 @@ class ApiController extends Controller
                 'email' => $user->email,
                 'roles' => $roles,
                 'foto' => $userData ? $userData->foto : null,
-                'must_change_password' => empty($user->password_changed_at),
+                'must_change_password' => $user->password_changed_at === null,
             ],
         ]);
     }
@@ -210,6 +210,8 @@ class ApiController extends Controller
             'pekerjaan' => 'nullable|string|max:255',
             'tempat_lahir' => 'nullable|string|max:255',
             'foto' => 'nullable|image|max:5120',
+            'password' => 'prohibited',
+            'password_confirmation' => 'prohibited',
         ]);
 
         $user = $request->user();
@@ -258,24 +260,78 @@ class ApiController extends Controller
     {
         $request->validate([
             'current_password' => 'required|string',
-            'password' => 'required|string|min:6|confirmed',
+            'password' => 'required|string|min:8|confirmed',
         ]);
 
-        $user = $request->user();
+        if ($request->password === 'mzt1234') {
+            throw ValidationException::withMessages([
+                'password' => ['Password baru tidak boleh menggunakan password sementara.'],
+            ]);
+        }
 
-        if (! Hash::check($request->current_password, $user->password)) {
+        $caller = $request->user();
+        if (! Hash::check($request->current_password, $caller->password)) {
             throw ValidationException::withMessages([
                 'current_password' => ['Password lama salah.'],
             ]);
         }
 
-        $user->password = Hash::make($request->password);
-        $user->password_changed_at = now();
-        $user->save();
+        if (Hash::check($request->password, $caller->password)) {
+            throw ValidationException::withMessages([
+                'password' => ['Password baru harus berbeda dari password saat ini.'],
+            ]);
+        }
+
+        if (! $this->databaseSessionsAvailable()) {
+            return $this->sessionRevocationUnavailable();
+        }
+
+        $accessToken = $caller->currentAccessToken();
+        $isPatCaller = $accessToken && ! $accessToken instanceof TransientToken;
+        $currentSessionId = ! $isPatCaller && $request->hasSession()
+            ? $request->session()->getId()
+            : null;
+
+        DB::transaction(function () use ($request, $caller, $isPatCaller, $currentSessionId) {
+            $user = User::whereKey($caller->id)->lockForUpdate()->firstOrFail();
+
+            if (! Hash::check($request->current_password, $user->password)) {
+                throw ValidationException::withMessages([
+                    'current_password' => ['Password lama salah.'],
+                ]);
+            }
+
+            if (Hash::check($request->password, $user->password)) {
+                throw ValidationException::withMessages([
+                    'password' => ['Password baru harus berbeda dari password saat ini.'],
+                ]);
+            }
+
+            $user->forceFill([
+                'password' => Hash::make($request->password),
+                'password_changed_at' => now(),
+                'remember_token' => Str::random(60),
+            ])->save();
+
+            $user->tokens()->delete();
+            if (! $isPatCaller && ($currentSessionId === null || $currentSessionId === '')) {
+                throw ValidationException::withMessages([
+                    'session' => ['Sesi browser saat ini tidak tersedia.'],
+                ]);
+            }
+            $this->deleteDatabaseSessions($user->id, $isPatCaller ? null : $currentSessionId);
+
+            $caller->setRawAttributes($user->getAttributes(), true);
+        });
+
+        if (! $isPatCaller && $request->hasSession()) {
+            $request->session()->put('password_hash_web', $caller->getAuthPassword());
+        }
 
         return response()->json([
             'success' => true,
             'message' => 'Password berhasil diubah',
+            'data' => ['must_change_password' => false],
         ]);
     }
 
@@ -303,131 +359,261 @@ class ApiController extends Controller
         ]);
     }
 
-    /**
-     * PHASE 1 — GENERATE ACCOUNT (members/{id}/account)
-     * Create a login account for a member that does not have one yet.
-     * Idempotent: returns 409 when the account already exists.
-     */
-    public function generateAccount(Request $request, $id)
+    public function accountResetAudit(Request $request)
     {
         Gate::forUser($request->user())->authorize('manageAccounts', MemberManagement::class);
 
-        $member = DataUser::where('id_users', $id)->first();
+        $items = User::query()
+            ->orderBy('id')
+            ->get()
+            ->map(function (User $user) {
+                $profiles = DataUser::where('id_users', $user->id)->get();
+                $roles = HakAksesRole::where('id_users', $user->id)->get(['nama_role', 'hak_akses']);
+                $eligibility = $this->accountResetEligibility($user, $profiles, $roles);
 
-        if (User::where('id', $id)->exists()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Akun sudah tersedia. Gunakan Reset Password apabila anggota lupa password.',
-            ], 409);
-        }
-
-        $lastUser = User::orderBy('id', 'desc')->first();
-        $newId = $lastUser ? (int) $lastUser->id_anggota + 1 : 1001;
-        $tempPassword = Str::random(10);
-
-        $user = new User();
-        $user->id = (int) $id;
-        $user->name = 'Anggota';
-        $user->email = null;
-        $user->id_anggota = (string) $newId;
-        $user->password = Hash::make($tempPassword);
-        $user->is_active = '1';
-        $user->password_changed_at = null;
-        $user->save();
-
-        if ($member) {
-            $member->update(['is_active' => '1']);
-        }
-
-        foreach (['anggota', 'profil'] as $role) {
-            HakAksesRole::create([
-                'id_users' => $user->id,
-                'nama_role' => $role,
-            ]);
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Akun berhasil dibuat.',
-            'password' => $tempPassword,
-        ], 201);
-    }
-
-    /**
-     * PHASE 1 — BULK GENERATE ACCOUNT
-     * Only creates accounts for members that do not have a user yet.
-     * Idempotent: safe to run repeatedly; never overwrites existing data.
-     */
-    public function bulkGenerate(Request $request)
-    {
-        Gate::forUser($request->user())->authorize('manageAccounts', MemberManagement::class);
-
-        $members = DataUser::whereDoesntHave('user')->get();
-
-        $created = 0;
-        foreach ($members as $member) {
-            if (User::where('id', $member->id_users)->exists()) {
-                continue;
-            }
-
-            $lastUser = User::orderBy('id', 'desc')->first();
-            $newId = $lastUser ? (int) $lastUser->id_anggota + 1 : 1001;
-
-            $user = new User();
-            $user->id = (int) $member->id_users;
-            $user->name = 'Anggota';
-            $user->email = null;
-            $user->id_anggota = (string) $newId;
-            $user->password = Hash::make(Str::random(10));
-            $user->is_active = '1';
-            $user->password_changed_at = null;
-            $user->save();
-
-            foreach (['anggota', 'profil'] as $role) {
-                HakAksesRole::create([
+                return [
                     'id_users' => $user->id,
-                    'nama_role' => $role,
-                ]);
-            }
+                    'id_anggota' => $user->id_anggota,
+                    'nama' => $user->name,
+                    'eligible' => $eligibility['eligible'],
+                    'reason_code' => $eligibility['reason_code'],
+                    'reason' => $eligibility['reason'],
+                ];
+            });
 
-            $created++;
-        }
+        $reasonCounts = $items
+            ->where('eligible', false)
+            ->countBy('reason_code')
+            ->sortKeys()
+            ->all();
 
         return response()->json([
             'success' => true,
             'data' => [
-                'created' => $created,
-                'skipped' => $members->count() - $created,
+                'audited_at' => now()->toIso8601String(),
+                'total_accounts' => $items->count(),
+                'eligible_count' => $items->where('eligible', true)->count(),
+                'ineligible_count' => $items->where('eligible', false)->count(),
+                'reason_counts' => $reasonCounts,
+                'items' => $items->values(),
             ],
         ]);
     }
 
-    /**
-     * PHASE 1 — RESET PASSWORD (members/{id}/account)
-     * Gives the member a fresh temporary password; forces a change on login.
-     */
     public function resetAccount(Request $request, $id)
     {
         Gate::forUser($request->user())->authorize('manageAccounts', MemberManagement::class);
 
-        $user = User::where('id', $id)->first();
-        if (! $user) {
+        if (! User::where('id', $id)->exists()) {
             return response()->json(['success' => false, 'message' => 'Akun tidak ditemukan.'], 404);
         }
 
-        $tempPassword = Str::random(10);
+        if (! $request->isJson()) {
+            return response()->json([
+                'success' => false,
+                'code' => 'JSON_REQUIRED',
+                'message' => 'Permintaan reset harus menggunakan JSON.',
+            ], 415);
+        }
 
-        $user->update([
-            'password' => Hash::make($tempPassword),
-            'password_changed_at' => null,
-            'is_active' => '1',
+        $request->validate([
+            'confirm' => 'required|boolean',
+            'confirmation_id_anggota' => 'required|string|max:255',
         ]);
+
+        if (! is_bool($request->input('confirm')) || $request->input('confirm') !== true) {
+            throw ValidationException::withMessages([
+                'confirm' => ['Konfirmasi reset harus berupa boolean true.'],
+            ]);
+        }
+
+        if (! $this->databaseSessionsAvailable()) {
+            return $this->sessionRevocationUnavailable();
+        }
+
+        $result = DB::transaction(function () use ($request, $id) {
+            $user = User::where('id', $id)->lockForUpdate()->first();
+            if (! $user) {
+                return ['status' => 404, 'message' => 'Akun tidak ditemukan.'];
+            }
+
+            $profiles = DataUser::where('id_users', $user->id)->lockForUpdate()->get();
+            $roles = HakAksesRole::where('id_users', $user->id)
+                ->lockForUpdate()
+                ->get(['nama_role', 'hak_akses']);
+            $eligibility = $this->accountResetEligibility($user, $profiles, $roles);
+
+            if (! $eligibility['eligible']) {
+                return [
+                    'status' => 409,
+                    'message' => $eligibility['reason'],
+                    'reason_code' => $eligibility['reason_code'],
+                ];
+            }
+
+            if (! hash_equals((string) $user->id_anggota, (string) $request->confirmation_id_anggota)) {
+                return ['status' => 422, 'message' => 'ID anggota konfirmasi tidak cocok.'];
+            }
+
+            $user->forceFill([
+                'password' => Hash::make('mzt1234'),
+                'password_changed_at' => null,
+                'remember_token' => Str::random(60),
+            ])->save();
+
+            $user->tokens()->delete();
+            $this->deleteDatabaseSessions($user->id);
+
+            Activitas_log::insert([
+                'subject' => 'reset password akun anggota #' . $user->id,
+                'url' => '/api/members/' . $user->id . '/account',
+                'method' => 'PUT',
+                'agent' => null,
+                'user_id' => (string) $request->user()->id,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return ['status' => 200];
+        });
+
+        if ($result['status'] !== 200) {
+            return response()->json([
+                'success' => false,
+                'code' => $result['reason_code'] ?? null,
+                'message' => $result['message'],
+            ], $result['status']);
+        }
 
         return response()->json([
             'success' => true,
             'message' => 'Password berhasil di-reset.',
-            'password' => $tempPassword,
+            'data' => [
+                'temporary_password' => 'mzt1234',
+                'must_change_password' => true,
+            ],
         ]);
+    }
+
+    private function accountResetEligibility(User $user, $profiles, $roles, bool $requireActive = true): array
+    {
+        $accountStatus = (string) $user->is_active;
+        if (! in_array($accountStatus, ['0', '1'], true)) {
+            return $this->ineligible('ACCOUNT_STATUS_INVALID', 'Status akun tidak valid.');
+        }
+
+        if ($requireActive && $accountStatus !== '1') {
+            return $this->ineligible('ACCOUNT_INACTIVE', 'Akun tidak aktif.');
+        }
+
+        if (trim((string) $user->id_anggota) === '') {
+            return $this->ineligible('MISSING_ID_ANGGOTA', 'Akun tidak memiliki ID anggota.');
+        }
+
+        if ($profiles->count() !== 1) {
+            return $this->ineligible('PROFILE_COUNT_INVALID', 'Akun harus memiliki tepat satu profil.');
+        }
+
+        $profileStatus = (string) $profiles->first()->is_active;
+        if (! in_array($profileStatus, ['0', '1'], true)) {
+            return $this->ineligible('PROFILE_STATUS_INVALID', 'Status profil anggota tidak valid.');
+        }
+
+        if ($accountStatus !== $profileStatus) {
+            return $this->ineligible('ACCOUNT_STATUS_MISMATCH', 'Status akun dan profil anggota tidak sinkron.');
+        }
+
+        if ($requireActive && $profileStatus !== '1') {
+            return $this->ineligible('PROFILE_INACTIVE', 'Profil anggota tidak aktif.');
+        }
+
+        $roleState = RoleGuard::roleState($roles);
+        if ($roleState['invalid_access'] !== []) {
+            return $this->ineligible('ROLE_ACCESS_INVALID', 'Hak akses akun tidak valid.');
+        }
+
+        if ($roleState['conflicts'] !== []) {
+            return $this->ineligible('ROLE_ACCESS_CONFLICT', 'Hak akses akun saling bertentangan.');
+        }
+
+        if ($roleState['denied'] !== []) {
+            return $this->ineligible('ROLE_ACCESS_DENIED', 'Akun memiliki hak akses yang ditolak.');
+        }
+
+        if (array_diff($roleState['raw'], ['anggota', 'profil']) !== []) {
+            return $this->ineligible('ROLE_NOT_ALLOWED', 'Akun memiliki peran selain anggota atau profil.');
+        }
+
+        if (! in_array('anggota', $roleState['effective'], true)) {
+            return $this->ineligible('ANGGOTA_ROLE_REQUIRED', 'Peran anggota aktif tidak ditemukan.');
+        }
+
+        return ['eligible' => true, 'reason_code' => 'ELIGIBLE', 'reason' => 'Memenuhi syarat reset akun.'];
+    }
+
+    private function ineligible(string $code, string $reason): array
+    {
+        return ['eligible' => false, 'reason_code' => $code, 'reason' => $reason];
+    }
+
+    private function databaseSessionsAvailable(): bool
+    {
+        if (config('session.driver') !== 'database') {
+            return false;
+        }
+
+        try {
+            $connection = $this->sessionConnectionName();
+            $schema = $connection ? Schema::connection($connection) : Schema::getFacadeRoot();
+            $table = config('session.table', 'sessions');
+
+            return $schema->hasTable($table)
+                && $schema->hasColumn($table, 'id')
+                && $schema->hasColumn($table, 'user_id');
+        } catch (\Throwable $exception) {
+            return false;
+        }
+    }
+
+    private function databaseSessionsAtomicallyRevocable(): bool
+    {
+        try {
+            $modelConnection = (new User)->getConnectionName() ?: DB::getDefaultConnection();
+            $sessionConnection = $this->sessionConnectionName() ?: DB::getDefaultConnection();
+
+            return $modelConnection === $sessionConnection && $this->databaseSessionsAvailable();
+        } catch (\Throwable $exception) {
+            return false;
+        }
+    }
+
+    private function deleteDatabaseSessions(int $userId, ?string $exceptSessionId = null): void
+    {
+        $query = DB::connection($this->sessionConnectionName())
+            ->table(config('session.table', 'sessions'))
+            ->where('user_id', $userId);
+
+        if ($exceptSessionId !== null && $exceptSessionId !== '') {
+            $query->where('id', '!=', $exceptSessionId);
+        }
+
+        $query->delete();
+    }
+
+    private function sessionConnectionName(): ?string
+    {
+        $connection = config('session.connection');
+
+        return is_string($connection) && $connection !== '' ? $connection : null;
+    }
+
+    private function sessionRevocationUnavailable(?string $message = null)
+    {
+        return response()->json([
+            'success' => false,
+            'code' => 'SESSION_REVOCATION_UNAVAILABLE',
+            'message' => $message ?? 'Reset tidak dapat dilakukan karena pencabutan sesi lengkap tidak tersedia.',
+        ], 503);
     }
 
     /**
@@ -441,17 +627,54 @@ class ApiController extends Controller
             'is_active' => 'required|string|in:1,0',
         ]);
 
-        $user = User::where('id', $id)->first();
-        if (! $user) {
-            return response()->json(['success' => false, 'message' => 'Akun tidak ditemukan.'], 404);
+        if ($request->is_active === '0' && ! $this->databaseSessionsAtomicallyRevocable()) {
+            return $this->sessionRevocationUnavailable(
+                'Akun tidak dapat dinonaktifkan karena pencabutan sesi lengkap tidak tersedia.'
+            );
         }
 
-        $user->update(['is_active' => $request->is_active]);
+        $result = DB::transaction(function () use ($request, $id) {
+            $user = User::where('id', $id)->lockForUpdate()->first();
+            if (! $user) {
+                return ['status' => 404, 'message' => 'Akun tidak ditemukan.'];
+            }
 
-        DataUser::where('id_users', $id)->update(['is_active' => $request->is_active]);
+            $profiles = DataUser::where('id_users', $user->id)->lockForUpdate()->get();
+            $roles = HakAksesRole::where('id_users', $user->id)
+                ->lockForUpdate()
+                ->get(['nama_role', 'hak_akses']);
+            $eligibility = $this->accountResetEligibility($user, $profiles, $roles, false);
 
-        if ($request->is_active === '0') {
-            $user->tokens()->delete();
+            if (! $eligibility['eligible']) {
+                return [
+                    'status' => 409,
+                    'message' => $eligibility['reason'],
+                    'reason_code' => $eligibility['reason_code'],
+                ];
+            }
+
+            $userAttributes = ['is_active' => $request->is_active];
+            if ($request->is_active === '0') {
+                $userAttributes['remember_token'] = Str::random(60);
+            }
+
+            $user->forceFill($userAttributes)->save();
+            $profiles->first()->forceFill(['is_active' => $request->is_active])->save();
+
+            if ($request->is_active === '0') {
+                $user->tokens()->delete();
+                $this->deleteDatabaseSessions($user->id);
+            }
+
+            return ['status' => 200];
+        });
+
+        if ($result['status'] !== 200) {
+            return response()->json([
+                'success' => false,
+                'code' => $result['reason_code'] ?? null,
+                'message' => $result['message'],
+            ], $result['status']);
         }
 
         return response()->json([
@@ -549,7 +772,23 @@ class ApiController extends Controller
     public function membersIndex(Request $request)
     {
         Gate::forUser($request->user())->authorize('viewDirectory', MemberManagement::class);
-        $members = DataUser::with('user')->where('is_active', '1')->get();
+        $members = DataUser::with('user')
+            ->whereHas('user')
+            ->get()
+            ->groupBy('id_users')
+            ->map(function ($profiles) {
+                if ($profiles->count() !== 1 || ! $profiles->first()->user) {
+                    return null;
+                }
+
+                $member = $profiles->first();
+                $roles = HakAksesRole::where('id_users', $member->id_users)->get(['nama_role', 'hak_akses']);
+                $eligibility = $this->accountResetEligibility($member->user, $profiles, $roles, false);
+
+                return $eligibility['eligible'] ? $member : null;
+            })
+            ->filter()
+            ->values();
         $data = $members->map(function ($m) {
             return [
                 'id' => $m->id,
@@ -611,78 +850,11 @@ class ApiController extends Controller
     {
         Gate::forUser($request->user())->authorize('writeMember', MemberManagement::class);
 
-        $request->validate([
-            'nama' => 'required|string|max:255',
-            'alamat' => 'required|string',
-            'niqobah' => 'required|string|max:15',
-            'pekerjaan' => 'required|string|max:15',
-            'tanggal_lahir' => 'required|date',
-            'tahun_masuk' => 'required|date',
-            'tahun_keluar' => 'required|date',
-            'no_hp' => 'required|string',
-            'password' => 'required|string|min:6',
-        ]);
-
-        DB::beginTransaction();
-        try {
-            // Generate ID Anggota
-            $lastUser = User::orderBy('id', 'desc')->first();
-            $newId = $lastUser ? $lastUser->id_anggota + 1 : 1001;
-
-            // Generate barcode
-            $barcode = 'MZT' . str_pad($newId, 5, '0', STR_PAD_LEFT);
-
-            // Create user
-            $user = User::create([
-                'name' => $request->nama,
-                'email' => $request->email ?? '',
-                'id_anggota' => $newId,
-                'password' => Hash::make($request->password),
-                'is_active' => '1',
-            ]);
-
-            // Handle photo upload
-            $foto = '';
-            if ($request->hasFile('foto')) {
-                $foto = $request->file('foto')->store('image/anggota', 'public');
-            }
-
-            // Create data user
-            $dataUser = DataUser::create([
-                'id_users' => $user->id,
-                'tempat_lahir' => $request->tempat_lahir ?? '',
-                'alamat' => $request->alamat,
-                'niqobah' => $request->niqobah,
-                'pekerjaan' => $request->pekerjaan,
-                'tanggal_lahir' => $request->tanggal_lahir,
-                'tahun_masuk' => $request->tahun_masuk,
-                'tahun_keluar' => $request->tahun_keluar,
-                'no_hp' => $request->no_hp,
-                'foto' => $foto,
-                'barcode' => $barcode,
-                'is_active' => '1',
-            ]);
-
-            // Handle roles
-            if ($request->has('roles')) {
-                foreach ($request->roles as $role) {
-                    HakAksesRole::create([
-                        'id_users' => $user->id,
-                        'nama_role' => $role,
-                    ]);
-                }
-            }
-
-            DB::commit();
-            return response()->json([
-                'success' => true,
-                'message' => 'Member created successfully',
-                'data' => $dataUser,
-            ], 201);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
-        }
+        return response()->json([
+            'success' => false,
+            'code' => 'ACCOUNT_PROVISIONING_DISABLED',
+            'message' => 'Pembuatan akun baru tidak tersedia.',
+        ], 405);
     }
 
     public function membersUpdate(Request $request, $id)
@@ -698,6 +870,8 @@ class ApiController extends Controller
             'tahun_masuk' => 'required|date',
             'tahun_keluar' => 'required|date',
             'no_hp' => 'required|string',
+            'password' => 'prohibited',
+            'password_confirmation' => 'prohibited',
         ]);
 
         DB::beginTransaction();
@@ -734,11 +908,6 @@ class ApiController extends Controller
                 'email' => $request->email ?? '',
             ]);
 
-            // Update password if provided
-            if ($request->filled('password')) {
-                $user->update(['password' => Hash::make($request->password)]);
-            }
-
             // Update roles
             if ($request->has('roles')) {
                 HakAksesRole::where('id_users', $id)->delete();
@@ -766,22 +935,11 @@ class ApiController extends Controller
     {
         Gate::forUser($request->user())->authorize('writeMember', MemberManagement::class);
 
-        DB::beginTransaction();
-        try {
-            $dataUser = DataUser::where('id_users', $id)->first();
-            if (!$dataUser) {
-                return response()->json(['success' => false, 'message' => 'Member not found'], 404);
-            }
-
-            $dataUser->update(['is_active' => '0']);
-            User::where('id', $id)->update(['is_active' => '0']);
-
-            DB::commit();
-            return response()->json(['success' => true, 'message' => 'Member deleted successfully']);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
-        }
+        return response()->json([
+            'success' => false,
+            'code' => 'ACCOUNT_STATUS_ROUTE_REQUIRED',
+            'message' => 'Perubahan status akun harus melalui endpoint status akun.',
+        ], 405);
     }
 
     /**
@@ -993,7 +1151,7 @@ class ApiController extends Controller
         }
 
         $user = $request->user();
-        $roles = HakAksesRole::where('id_users', $user->id)->pluck('nama_role')->toArray();
+        $roles = RoleGuard::roles($user);
         $isOwner = $user->id_anggota === $order->id_anggota;
         $isStaff = in_array('admin', $roles, true);
 
@@ -1429,6 +1587,8 @@ class ApiController extends Controller
             'tahun_masuk' => 'required|date',
             'tahun_keluar' => 'required|date',
             'no_hp' => 'required|string',
+            'password' => 'prohibited',
+            'password_confirmation' => 'prohibited',
         ]);
 
         DB::beginTransaction();
@@ -1460,10 +1620,6 @@ class ApiController extends Controller
                 'name' => $request->nama,
                 'email' => $request->email ?? '',
             ]);
-
-            if ($request->filled('password')) {
-                $user->update(['password' => Hash::make($request->password)]);
-            }
 
             DB::commit();
             return response()->json([

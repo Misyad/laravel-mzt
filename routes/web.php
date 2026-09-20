@@ -40,20 +40,21 @@ Route::post('/transaksi/pembayaran',[ HomeViews::class, 'simpanPembayaran']);
 
 Route::middleware(['guest', 'revalidate'])->group(function () {
     Route::get('/login',[ Login::class, 'viewLogin'])->name('login');
-    Route::post('/login-aksi',[ Login::class, 'action_login']);
+    Route::post('/login-aksi',[ Login::class, 'action_login'])->middleware('throttle:legacy-login');
 });
 Route::middleware(['checkrole:dashboard', 'revalidate'])->group(function () {
     Route::get('/dashboard',[ Dashboard::class, 'index']);
     Route::get('/dashboard/get-calender',[ Dashboard::class, 'getCalender']);
 });
 
-Route::middleware(['checkrole:anggota', 'revalidate'])->group(function () {
+Route::middleware(['checkrole:ketua,admin', 'revalidate'])->group(function () {
     Route::get('/tabel-anggota',[ C_Anggota::class, 'tabelAnggota']);
-    Route::post('/tabel-anggota/store',[ C_Anggota::class, 'storeData']);
     Route::get('/tabel-anggota/data',[ C_Anggota::class, 'getData']);
     Route::post('/tabel-anggota/data-hak-akses',[ C_Anggota::class, 'getDataHakakses']);
     Route::post('/tabel-anggota/edit',[ C_Anggota::class, 'editData']);
-    Route::post('/tabel-anggota/hapus',[ C_Anggota::class, 'deleteData']);
+});
+
+Route::middleware(['checkrole:id_card,ketua,admin', 'revalidate'])->group(function () {
     Route::get('/tabel-anggota/kta/{id}',[ C_Anggota::class, 'exportPdf']);
 });
 
@@ -76,7 +77,6 @@ Route::middleware(['checkrole:event', 'revalidate'])->group(function () {
     Route::get('/tabel-event-transaksi',[ C_transaksi::class, 'index']);
     Route::get('/tabel-event-transaksi/transaksi',[ C_transaksi::class, 'tabelTransaksi']);
     Route::post('/tabel-event-transaksi/simpan',[ C_transaksi::class, 'tambahTransaksiAdmin']);
-    Route::post('/tabel-event-transaksi/verifikasi',[ C_transaksi::class, 'verifikasiPendaftar']);
     Route::post('/tabel-event-transaksi/tambah-transasi-anggota',[ C_transaksi::class, 'tambahTransaksiAnggota']);
 
     Route::get('/tabel-event/detail/{id}/{id2}/prisensi',[ C_prisensi::class, 'index']);
@@ -84,6 +84,9 @@ Route::middleware(['checkrole:event', 'revalidate'])->group(function () {
     Route::post('/data-user-prisensi/send-data',[ C_prisensi::class, 'sendData']);
     Route::post('/data-user-prisensi/get-data-tabel',[ C_prisensi::class, 'getDataTabel']);
 
+});
+Route::middleware(['checkrole:finance,ketua,admin', 'revalidate'])->group(function () {
+    Route::post('/tabel-event-transaksi/verifikasi',[ C_transaksi::class, 'verifikasiPendaftar']);
 });
 Route::middleware(['checkrole:prisensi', 'revalidate'])->group(function () {
     Route::get('/tabel-prisensi',[ C_prisensi::class, 'tabel_prisensi']);
@@ -117,7 +120,7 @@ Route::middleware(['checkrole:tampilan', 'revalidate'])->group(function () {
 });
 Route::middleware(['checkrole:aktivitas_user', 'revalidate'])->group(function () {
     Route::get('/tabel-log-user',[ C_Aktivitas_log::class, 'index']);
-    Route::get('/tabel-log-user/data',[ C_Anggota::class, 'getData']);
+    Route::get('/tabel-log-user/data',[ C_Aktivitas_log::class, 'getData']);
     Route::get('/tabel-log-user/detail/{id}',[ C_Aktivitas_log::class, 'aktivitas']);
     Route::post('/tabel-log-user/detail/{id}/data',[ C_Aktivitas_log::class, 'dataAktivitasLog']);
     Route::get('/audit-timeline',[ C_AuditTimeline::class, 'index']);
@@ -136,4 +139,5 @@ Route::middleware(['checkrole:id_card', 'revalidate'])->group(function () {
 });
 
 
-Route::get('/logout', [Login::class, 'logout']);
+Route::post('/logout', [Login::class, 'logout']);
+Route::get('/logout', [Login::class, 'logout'])->middleware('throttle:6,1');

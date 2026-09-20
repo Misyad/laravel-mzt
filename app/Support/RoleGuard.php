@@ -3,62 +3,97 @@
 namespace App\Support;
 
 use App\Models\HakAksesRole;
+use App\Models\RoleUser;
 use App\Models\User;
 
-/**
- * Centralises RBAC checks for the payment engine (Phase 2B).
- *
- * Roles are stored in `hak_akses_role` (PRD §21.4: Alumni / Dashboard / Event /
- * Finance / Ketua / Administrator). Back-office permissions are granted to the
- * staff set (dashboard/event/finance/ketua/admin); payment verification is
- * restricted to finance/ketua/admin per PRD §17.12.
- */
 class RoleGuard
 {
-    /** Back-office roles that may create / view all resources. */
     public const STAFF_ROLES = ['dashboard', 'event', 'finance', 'ketua', 'admin'];
 
-    /** Roles allowed to approve/reject payments (PRD §17.12: Finance & Admin). */
     public const VERIFIER_ROLES = ['finance', 'ketua', 'admin'];
 
-    /** Dedicated check-in operator roles (Phase 2C — PRD §17.12). */
     public const CHECK_IN_ROLES = ['prisensi', 'event'];
 
-    /** Full account / member administration (PRD §21.4 Administrator & Ketua). */
     public const ADMIN_ROLES = ['ketua', 'admin'];
 
     public const KTA_CARD_ROLES = ['id_card', 'ketua', 'admin'];
 
-    /**
-     * The role names attached to a user.
-     *
-     * @return string[]
-     */
+    public static function normalize($value): string
+    {
+        return strtolower(trim((string) $value));
+    }
+
+    public static function roleState(iterable $rows, bool $filterCatalog = true): array
+    {
+        $rawRoles = [];
+        $invalidAccess = [];
+        $granted = [];
+        $denied = [];
+
+        foreach ($rows as $row) {
+            $role = self::normalize($row->nama_role ?? '');
+            $access = self::normalize($row->hak_akses ?? '');
+            $rawRoles[] = $role;
+
+            if ($access === 'access') {
+                $granted[$role] = true;
+            } elseif ($access === 'no_accesss') {
+                $denied[$role] = true;
+            } else {
+                $invalidAccess[] = $access;
+            }
+        }
+
+        $effective = [];
+        foreach (array_keys($granted) as $role) {
+            if ($role !== '' && ! isset($denied[$role])) {
+                $effective[] = $role;
+            }
+        }
+
+        if ($filterCatalog) {
+            $effective = self::filterByActiveCatalog($effective);
+        }
+        sort($effective);
+
+        $conflicts = array_values(array_intersect(array_keys($granted), array_keys($denied)));
+        sort($conflicts);
+
+        $deniedRoles = array_keys($denied);
+        sort($deniedRoles);
+
+        return [
+            'effective' => array_values(array_unique($effective)),
+            'raw' => array_values(array_unique($rawRoles)),
+            'denied' => $deniedRoles,
+            'conflicts' => $conflicts,
+            'invalid_access' => array_values(array_unique($invalidAccess)),
+        ];
+    }
+
     public static function roles(User $user): array
     {
-        return HakAksesRole::where('id_users', $user->id)
-            ->pluck('nama_role')
-            ->map(fn ($r) => strtolower((string) $r))
-            ->toArray();
+        try {
+            $rows = HakAksesRole::where('id_users', $user->id)->get(['nama_role', 'hak_akses']);
+        } catch (\Throwable $exception) {
+            return [];
+        }
+
+        return self::roleState($rows)['effective'];
     }
 
-    /**
-     * Whether the user holds at least one of the given roles.
-     *
-     * @param  string[]  $allowed
-     */
     public static function hasAnyRole(User $user, array $allowed): bool
     {
-        return count(array_intersect(self::roles($user), array_map('strtolower', $allowed))) > 0;
+        $allowed = array_map([self::class, 'normalize'], $allowed);
+
+        return count(array_intersect(self::roles($user), $allowed)) > 0;
     }
 
-    /** Whether the user is a back-office staff member. */
     public static function isStaff(User $user): bool
     {
         return self::hasAnyRole($user, self::STAFF_ROLES);
     }
 
-    /** Whether the user holds full account / member administration rights. */
     public static function isAdmin(User $user): bool
     {
         return self::hasAnyRole($user, self::ADMIN_ROLES);
@@ -69,18 +104,45 @@ class RoleGuard
         return self::hasAnyRole($user, self::KTA_CARD_ROLES);
     }
 
-    /** Whether the user may verify (approve/reject) payments. */
     public static function canVerify(User $user): bool
     {
         return self::hasAnyRole($user, self::VERIFIER_ROLES);
     }
 
-    /**
-     * Whether the user may check in attendees (Phase 2C — PRD §17.12):
-     * dedicated operators (prisensi / event) or any verifier (finance / ketua / admin).
-     */
     public static function canCheckIn(User $user): bool
     {
         return self::hasAnyRole($user, self::CHECK_IN_ROLES) || self::canVerify($user);
+    }
+
+    private static function filterByActiveCatalog(array $roles): array
+    {
+        try {
+            $catalog = RoleUser::query()->get(['nama_role', 'is_active']);
+        } catch (\Throwable $exception) {
+            return [];
+        }
+
+        if ($catalog->isEmpty()) {
+            return [];
+        }
+
+        $catalogState = [];
+        foreach ($catalog as $catalogRole) {
+            $name = self::normalize($catalogRole->nama_role);
+            if ($name === '') {
+                continue;
+            }
+
+            if (array_key_exists($name, $catalogState)) {
+                return [];
+            }
+
+            $catalogState[$name] = (string) $catalogRole->is_active === '1';
+        }
+
+        return array_values(array_filter(
+            $roles,
+            fn (string $role) => ($catalogState[$role] ?? false) === true
+        ));
     }
 }

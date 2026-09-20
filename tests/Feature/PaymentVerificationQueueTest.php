@@ -25,6 +25,7 @@ class PaymentVerificationQueueTest extends TestCase
             self::$schemaBuilt = true;
         }
         $this->truncate(['payment_logs','payment_proofs','payments','orders','events','hak_akses_role','personal_access_tokens','users']);
+        $this->seedActiveRoleCatalog(['anggota', 'dashboard', 'event', 'finance', 'prisensi', 'ketua', 'admin']);
     }
 
     private function buildSchema(): void
@@ -32,6 +33,9 @@ class PaymentVerificationQueueTest extends TestCase
         // Ensure users.is_active exists (CheckActiveAccount) – add if missing.
         if (!Schema::hasColumn('users','is_active')) {
             Schema::table('users', function ($table) { $table->string('is_active')->default('1'); });
+        }
+        if (!Schema::hasColumn('users','password_changed_at')) {
+            Schema::table('users', function ($table) { $table->timestamp('password_changed_at')->nullable(); });
         }
         if (!Schema::hasTable('events')) {
             Schema::create('events', function ($table) {
@@ -123,7 +127,7 @@ class PaymentVerificationQueueTest extends TestCase
 
     private function makeUser(string $role): User
     {
-        $u = User::factory()->create(['id_anggota'=> 'MZT'.str_pad((string) random_int(10000,99999),5,'0',STR_PAD_LEFT), 'is_active'=>'1']);
+        $u = User::factory()->create(['id_anggota'=> 'MZT'.str_pad((string) random_int(10000,99999),5,'0',STR_PAD_LEFT), 'is_active'=>'1', 'password_changed_at' => now()]);
         HakAksesRole::create(['id_users'=>$u->id,'nama_role'=>$role,'hak_akses'=>'access']);
         return $u;
     }
@@ -253,7 +257,7 @@ class PaymentVerificationQueueTest extends TestCase
         $this->getJson('/api/payments?per_page=5')->assertStatus(200);
         $c=count(DB::getQueryLog());
         // Queue should be bounded ~3 queries regardless of rows
-        $this->assertLessThanOrEqual(6, $c);
+        $this->assertLessThanOrEqual(7, $c);
     }
 
     public function test_unauthorized_verify403(): void
