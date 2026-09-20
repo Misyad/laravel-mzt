@@ -17,7 +17,7 @@
 <script src="/stisla/assets/jquery.min.js"></script>
 <body>
   <div style="height: 122mm; width: 94mm; position: relative; font-family: 'Roboto Slab', serif;">
-    <img  src="{{ asset('/assets/KTA Musan FixArtboard 1.jpg') }}" alt="" srcset="">
+    <img  src="/assets/kta-background.jpg" alt="" srcset="">
     <img
         style="width: 68mm; height: 93mm; object-fit: cover; position: absolute; top: 180px; left: 62px; border-radius: 10px;"
         src="{{ asset($profil) }}"

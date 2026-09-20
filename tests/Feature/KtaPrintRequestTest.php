@@ -744,8 +744,12 @@ PHP;
             ->assertJsonPath('data.alamat', 'Jl. Contoh')
             ->assertJsonPath('data.niqobah', 'Pakis')
             ->assertJsonPath('data.tahun_masuk', '2011')
-            ->assertJsonPath('data.tahun_keluar', '2019');
+            ->assertJsonPath('data.tahun_keluar', '2019')
+            ->assertJsonPath('data.background_url', '/assets/kta-background.jpg');
 
+        $background = public_path('assets/kta-background.jpg');
+        $this->assertFileExists($background);
+        $this->assertSame([1064, 686], array_slice(getimagesize($background), 0, 2));
         $this->assertStringStartsWith('data:image/svg+xml;base64,', $card->json('data.barcode_data_uri'));
         $this->assertArrayNotHasKey('email', $card->json('data'));
         $this->assertArrayNotHasKey('no_hp', $card->json('data'));
@@ -793,7 +797,8 @@ PHP;
 
         $this->get("/tabel-anggota/kta/{$member->id}")
             ->assertSuccessful()
-            ->assertSee('Achmad Hasanudin');
+            ->assertSee('Achmad Hasanudin')
+            ->assertSee('/assets/kta-background.jpg', false);
 
         DataUser::where('id_users', $member->id)->update(['is_active' => '0']);
         $this->get("/tabel-anggota/kta/{$member->id}")->assertNotFound();

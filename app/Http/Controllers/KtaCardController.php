@@ -111,7 +111,7 @@ class KtaCardController extends Controller
             'foto' => $member->foto ?: null,
             'barcode_value' => $idAnggota,
             'barcode_data_uri' => 'data:image/svg+xml;base64,' . base64_encode($barcode),
-            'background_url' => asset('/assets/KTA Musan FixArtboard 1.jpg'),
+            'background_url' => '/assets/kta-background.jpg',
         ];
     }
 

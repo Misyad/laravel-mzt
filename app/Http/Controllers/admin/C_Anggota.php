@@ -334,7 +334,6 @@ class C_Anggota extends Controller
 
         // Mendapatkan path file
         $filePath2 = '/storage/'. $data->foto;
-        $filePath3 = '/assets/KTA Musan FixArtboard 1.jpg';
         $cek = public_path('storage/'. $data->foto);
         if(empty($data->foto) || !File::exists($cek)){
             $filePath2 = '/assets/avatar-1.png';
