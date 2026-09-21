@@ -5,9 +5,13 @@ namespace App\Support;
 use App\Models\HakAksesRole;
 use App\Models\RoleUser;
 use App\Models\User;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class RoleGuard
 {
+    public const REQUIRED_MEMBER_ROLES = ['anggota', 'profil'];
+
     public const STAFF_ROLES = ['dashboard', 'event', 'finance', 'ketua', 'admin'];
 
     public const VERIFIER_ROLES = ['finance', 'ketua', 'admin'];
@@ -82,6 +86,87 @@ class RoleGuard
         return self::roleState($rows)['effective'];
     }
 
+    public static function validateMemberRoleSelection(array $roles): array
+    {
+        $normalized = [];
+
+        foreach ($roles as $role) {
+            if (! is_string($role) || strlen($role) > 255) {
+                throw ValidationException::withMessages([
+                    'roles' => ['Role harus berupa teks yang valid.'],
+                ]);
+            }
+
+            $name = self::normalize($role);
+            if ($name === '' || isset($normalized[$name])) {
+                throw ValidationException::withMessages([
+                    'roles' => ['Role tidak boleh kosong atau duplikat.'],
+                ]);
+            }
+
+            $normalized[$name] = true;
+        }
+
+        $catalogState = [];
+        foreach (RoleUser::query()->get(['nama_role', 'is_active']) as $catalogRole) {
+            $name = self::normalize($catalogRole->nama_role);
+            if ($name === '' || array_key_exists($name, $catalogState)) {
+                throw ValidationException::withMessages([
+                    'roles' => ['Katalog role tidak valid.'],
+                ]);
+            }
+
+            $catalogState[$name] = (string) $catalogRole->is_active === '1';
+        }
+
+        if ($catalogState === []) {
+            throw ValidationException::withMessages([
+                'roles' => ['Katalog role tidak tersedia.'],
+            ]);
+        }
+
+        foreach (self::REQUIRED_MEMBER_ROLES as $role) {
+            if (array_key_exists($role, $catalogState) && $catalogState[$role] !== true) {
+                throw ValidationException::withMessages([
+                    'roles' => ['Role wajib anggota tidak aktif.'],
+                ]);
+            }
+        }
+
+        foreach (array_keys($normalized) as $role) {
+            if (in_array($role, self::REQUIRED_MEMBER_ROLES, true) && ! array_key_exists($role, $catalogState)) {
+                continue;
+            }
+
+            if (($catalogState[$role] ?? false) !== true) {
+                throw ValidationException::withMessages([
+                    'roles' => ['Role yang dipilih tidak tersedia.'],
+                ]);
+            }
+        }
+
+        return array_values(array_unique(array_merge(
+            self::REQUIRED_MEMBER_ROLES,
+            array_keys($normalized)
+        )));
+    }
+
+    public static function replaceMemberRoles(User $user, array $roles): void
+    {
+        $roles = self::validateMemberRoleSelection($roles);
+
+        DB::transaction(function () use ($user, $roles): void {
+            User::query()->whereKey($user->id)->lockForUpdate()->firstOrFail();
+            HakAksesRole::where('id_users', $user->id)->delete();
+
+            HakAksesRole::insert(array_map(fn (string $role) => [
+                'id_users' => $user->id,
+                'nama_role' => $role,
+                'hak_akses' => 'access',
+            ], $roles));
+        });
+    }
+
     public static function hasAnyRole(User $user, array $allowed): bool
     {
         $allowed = array_map([self::class, 'normalize'], $allowed);
@@ -142,7 +227,7 @@ class RoleGuard
 
         return array_values(array_filter(
             $roles,
-            fn (string $role) => ($catalogState[$role] ?? false) === true
+            fn (string $role) => ($catalogState[$role] ?? in_array($role, self::REQUIRED_MEMBER_ROLES, true)) === true
         ));
     }
 }

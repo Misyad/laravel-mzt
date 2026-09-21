@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Gate;
 use App\Support\MemberManagement;
+use App\Support\RoleGuard;
 Use PDF;
 use DataPicker;
 use Image;
@@ -27,8 +28,11 @@ class C_Anggota extends Controller
     {
         Gate::forUser(auth()->user())->authorize('writeMember', MemberManagement::class);
 
-        $roles = RoleUser::orderBy('nama_role', 'asc')->get();
-        $roles_count = RoleUser::count();
+        $roles = RoleUser::where('is_active', '1')
+            ->whereNotIn('nama_role', RoleGuard::REQUIRED_MEMBER_ROLES)
+            ->orderBy('nama_role', 'asc')
+            ->get();
+        $roles_count = $roles->count();
         \DataPicker::activitas_log('membuka tabel anggota');
         return view('admin.tabel_anggota',['roles' => $roles,'roles_count' => $roles_count ]);
     }
@@ -91,10 +95,19 @@ class C_Anggota extends Controller
             'tanggal_lahir' => ['required'],
             'tahun_masuk' => ['required'],
             'tahun_keluar' => ['required'],
+            'roles_present' => ['sometimes', 'accepted'],
+            'roles' => ['sometimes', 'array'],
+            'roles.*' => ['string', 'distinct:strict', 'max:255'],
             'foto' => ['nullable', 'image','mimes:jpg,png,jpeg,gif,svg','max:1048'],
             'password' => ['prohibited'],
             'password_confirmation' => ['prohibited'],
         ]);
+
+        $submittedRoles = null;
+        if (array_key_exists('roles_present', $request->all()) || array_key_exists('roles', $request->all())) {
+            $submittedRoles = $request->input('roles', []);
+            RoleGuard::validateMemberRoleSelection($submittedRoles);
+        }
 
         
         $id = $request->id_users;
@@ -148,26 +161,9 @@ class C_Anggota extends Controller
                     'foto' => $image_path,
                ]);
 
-               HakAksesRole::where('id_users', $id)->delete();
-               if(isset($request->hak_akses)){
-                        
-                        $roles = array_map(function($v) use($id){
-                            return [
-                                'id_users' => $id,
-                                'nama_role' => $v,
-                            ];
-                        }, $request->hak_akses);
-
-                        $a=array("id_users"=>$id,"nama_role"=>"profil");
-                        array_push($roles,$a);
-
-                        HakAksesRole::insert($roles);
-                 }else{
-
-                    $roles = ["id_users"=>$id,"nama_role"=>"profil"];
-                    
-                    HakAksesRole::insert($roles);
-                }
+               if ($submittedRoles !== null) {
+                   RoleGuard::replaceMemberRoles($data_diri, $submittedRoles);
+               }
           
 
                 return response()->json([
@@ -210,26 +206,9 @@ class C_Anggota extends Controller
                      'foto' => $image_path,
                 ]);
  
-                HakAksesRole::where('id_users', $id)->delete();
-                if(isset($request->hak_akses)){
-                         
-                         $roles = array_map(function($v) use($id){
-                             return [
-                                 'id_users' => $id,
-                                 'nama_role' => $v,
-                             ];
-                         }, $request->hak_akses);
- 
-                         $a=array("id_users"=>$id,"nama_role"=>"profil");
-                         array_push($roles,$a);
- 
-                         HakAksesRole::insert($roles);
-                  }else{
- 
-                     $roles = ["id_users"=>$id,"nama_role"=>"profil"];
-                     
-                     HakAksesRole::insert($roles);
-                 }
+                if ($submittedRoles !== null) {
+                    RoleGuard::replaceMemberRoles($data_diri, $submittedRoles);
+                }
            
  
                  return response()->json([
@@ -266,25 +245,8 @@ class C_Anggota extends Controller
             'tahun_keluar' => date("Y-m-d", strtotime($request->tahun_keluar)),
        ]);
 
-            HakAksesRole::where('id_users', $id)->delete();
-            if(isset($request->hak_akses)){
-                    
-                    $roles = array_map(function($v) use($id){
-                        return [
-                            'id_users' => $id,
-                            'nama_role' => $v,
-                        ];
-                    }, $request->hak_akses);
-
-                    $a=array("id_users"=>$id,"nama_role"=>"profil");
-                    array_push($roles,$a);
-
-                    HakAksesRole::insert($roles);
-            }else{
-
-                $roles = ["id_users"=>$id,"nama_role"=>"profil"];
-                
-                HakAksesRole::insert($roles);
+            if ($submittedRoles !== null) {
+                RoleGuard::replaceMemberRoles($data_diri, $submittedRoles);
             }
 
             return response()->json([

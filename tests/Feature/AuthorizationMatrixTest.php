@@ -5,9 +5,11 @@ namespace Tests\Feature;
 use App\Models\HakAksesRole;
 use App\Models\RoleUser;
 use App\Models\User;
+use App\Support\RoleGuard;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -65,6 +67,7 @@ class AuthorizationMatrixTest extends TestCase
             'prisensi_kehadiran',
             'events',
             'event_status',
+            'activitas_logs',
             'beritas',
             'carosels',
             'info_pesantrens',
@@ -88,6 +91,7 @@ class AuthorizationMatrixTest extends TestCase
         Schema::dropIfExists('info_pesantrens');
         Schema::dropIfExists('carosels');
         Schema::dropIfExists('beritas');
+        Schema::dropIfExists('activitas_logs');
         Schema::dropIfExists('event_status');
         Schema::dropIfExists('events');
         Schema::dropIfExists('prisensi_kehadiran');
@@ -211,6 +215,16 @@ class AuthorizationMatrixTest extends TestCase
             $table->date('tanggal_selesai')->nullable();
         });
 
+        Schema::create('activitas_logs', function ($table) {
+            $table->id();
+            $table->string('subject');
+            $table->string('url');
+            $table->string('method');
+            $table->string('agent')->nullable();
+            $table->string('user_id')->nullable();
+            $table->timestamps();
+        });
+
         Schema::create('beritas', function ($table) {
             $table->id();
             $table->string('judul');
@@ -271,6 +285,16 @@ class AuthorizationMatrixTest extends TestCase
         ]);
     }
 
+    private function assignedRoles(User $user): array
+    {
+        return HakAksesRole::where('id_users', $user->id)
+            ->orderBy('nama_role')
+            ->orderBy('hak_akses')
+            ->get(['nama_role', 'hak_akses'])
+            ->map(fn (HakAksesRole $role) => [$role->nama_role, $role->hak_akses])
+            ->all();
+    }
+
     /** Seed a data_users profile row (optionally without a linked user). */
     private function makeMemberData(?int $userId = null): int
     {
@@ -320,7 +344,7 @@ class AuthorizationMatrixTest extends TestCase
             $this->assertSame(
                 401,
                 $response->status(),
-                "Expected 401 for guest {$method} {$path}, got " . $response->status()
+                "Expected 401 for guest {$method} {$path}, got ".$response->status()
             );
         }
     }
@@ -408,16 +432,116 @@ class AuthorizationMatrixTest extends TestCase
         Sanctum::actingAs($this->makeUser('finance'));
         // Route contract: member update is POST /members/{id} (legacy).
         $this->postJson("/api/members/{$target->id}", array_merge($this->memberPayload(), [
-            'email' => 'upd-' . uniqid() . '@test.local',
+            'email' => 'upd-'.uniqid().'@test.local',
         ]))->assertStatus(403);
 
         Sanctum::actingAs($this->makeUser('admin'));
         $dbg = $this->postJson("/api/members/{$target->id}", array_merge($this->memberPayload(), [
-            'email' => 'upd2-' . uniqid() . '@test.local',
+            'email' => 'upd2-'.uniqid().'@test.local',
         ]));
         $dbg->assertSuccessful();
 
         $this->deleteJson("/api/members/{$target->id}")->assertStatus(405);
+    }
+
+    public function test_member_update_without_roles_preserves_assignments(): void
+    {
+        $target = $this->makeAlumni();
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'profil']);
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'event']);
+        $this->makeMemberData($target->id);
+        $before = $this->assignedRoles($target);
+
+        Sanctum::actingAs($this->makeUser('admin'));
+        $this->postJson("/api/members/{$target->id}", $this->memberPayload())
+            ->assertSuccessful();
+
+        $this->assertSame($before, $this->assignedRoles($target));
+    }
+
+    public function test_member_update_rejects_malformed_unknown_and_inactive_roles_without_mutation(): void
+    {
+        $target = $this->makeAlumni();
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'profil']);
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'event']);
+        $this->makeMemberData($target->id);
+        $before = $this->assignedRoles($target);
+        $admin = $this->makeUser('admin');
+
+        Sanctum::actingAs($admin);
+        $this->postJson("/api/members/{$target->id}", array_merge($this->memberPayload(), [
+            'nama' => 'Should Not Persist',
+            'roles' => 'event',
+        ]))->assertStatus(422)
+            ->assertJsonValidationErrors('roles');
+
+        $this->postJson("/api/members/{$target->id}", array_merge($this->memberPayload(), [
+            'roles' => ['unknown'],
+        ]))->assertStatus(422)
+            ->assertJsonValidationErrors('roles');
+
+        $this->postJson("/api/members/{$target->id}", array_merge($this->memberPayload(), [
+            'roles' => ['event', ' EVENT '],
+        ]))->assertStatus(422)
+            ->assertJsonValidationErrors('roles');
+
+        RoleUser::where('nama_role', 'event')->update(['is_active' => '0']);
+        $this->postJson("/api/members/{$target->id}", array_merge($this->memberPayload(), [
+            'roles' => ['event'],
+        ]))->assertStatus(422)
+            ->assertJsonValidationErrors('roles');
+
+        $this->assertSame($before, $this->assignedRoles($target));
+        $this->assertNotSame('Should Not Persist', $target->fresh()->name);
+    }
+
+    public function test_explicit_empty_role_selection_retains_required_member_roles(): void
+    {
+        $target = $this->makeAlumni();
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'profil']);
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'event']);
+        $this->makeMemberData($target->id);
+        RoleUser::where('nama_role', 'profil')->delete();
+
+        Sanctum::actingAs($this->makeUser('admin'));
+        $this->postJson("/api/members/{$target->id}", array_merge($this->memberPayload(), [
+            'roles' => [],
+        ]))->assertSuccessful();
+
+        $this->assertSame([
+            ['anggota', 'access'],
+            ['profil', 'access'],
+        ], $this->assignedRoles($target));
+        $this->assertSame(['anggota', 'profil'], RoleGuard::roles($target));
+    }
+
+    public function test_legacy_member_form_uses_roles_payload_and_retains_required_roles(): void
+    {
+        Storage::fake('public');
+        $target = $this->makeAlumni();
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'profil']);
+        $this->makeMemberData($target->id);
+        $before = $this->assignedRoles($target);
+
+        $this->actingAs($this->makeUser('admin'), 'web');
+        $this->post('/tabel-anggota/edit', array_merge($this->memberPayload(), [
+            'id_users' => $target->id,
+            'roles_present' => '1',
+            'roles' => 'event',
+        ]))->assertSessionHasErrors('roles');
+        $this->assertSame($before, $this->assignedRoles($target));
+
+        $this->post('/tabel-anggota/edit', array_merge($this->memberPayload(), [
+            'id_users' => $target->id,
+            'roles_present' => '1',
+            'roles' => ['event'],
+        ]))->assertSuccessful();
+
+        $this->assertSame([
+            ['anggota', 'access'],
+            ['event', 'access'],
+            ['profil', 'access'],
+        ], $this->assignedRoles($target));
     }
 
     /* ------------------------------------- D/E/F/G. Account lifecycle (admin) */
@@ -487,7 +611,7 @@ class AuthorizationMatrixTest extends TestCase
     {
         return [
             'judul_event' => 'Event Uji C-01',
-            'slug' => 'event-uji-' . uniqid(),
+            'slug' => 'event-uji-'.uniqid(),
             'lokasi' => 'Aula',
             'harga' => '100000',
             'deskripsi' => '<p>Deskripsi</p>',
@@ -504,7 +628,7 @@ class AuthorizationMatrixTest extends TestCase
             Sanctum::actingAs($this->makeUser($role));
 
             $dEv = $this->postJson('/api/events', $this->eventPayload());
-                $dEv->assertStatus(403);
+            $dEv->assertStatus(403);
             $this->deleteJson('/api/events/999999')->assertStatus(403);
         }
     }
@@ -533,7 +657,7 @@ class AuthorizationMatrixTest extends TestCase
             Sanctum::actingAs($this->makeUser($role));
 
             $this->postJson('/api/news', [
-                'judul' => 'X', 'slug' => 'x-' . uniqid(), 'deskripsi' => 'x',
+                'judul' => 'X', 'slug' => 'x-'.uniqid(), 'deskripsi' => 'x',
             ])->assertStatus(403);
         }
 

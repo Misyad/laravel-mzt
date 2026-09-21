@@ -870,9 +870,17 @@ class ApiController extends Controller
             'tahun_masuk' => 'required|date',
             'tahun_keluar' => 'required|date',
             'no_hp' => 'required|string',
+            'roles' => 'sometimes|array',
+            'roles.*' => 'string|distinct:strict|max:255',
             'password' => 'prohibited',
             'password_confirmation' => 'prohibited',
         ]);
+
+        $submittedRoles = null;
+        if (array_key_exists('roles', $request->all())) {
+            $submittedRoles = $request->input('roles', []);
+            RoleGuard::validateMemberRoleSelection($submittedRoles);
+        }
 
         DB::beginTransaction();
         try {
@@ -908,15 +916,8 @@ class ApiController extends Controller
                 'email' => $request->email ?? '',
             ]);
 
-            // Update roles
-            if ($request->has('roles')) {
-                HakAksesRole::where('id_users', $id)->delete();
-                foreach ($request->roles as $role) {
-                    HakAksesRole::create([
-                        'id_users' => $id,
-                        'nama_role' => $role,
-                    ]);
-                }
+            if ($submittedRoles !== null) {
+                RoleGuard::replaceMemberRoles($user, $submittedRoles);
             }
 
             DB::commit();
@@ -925,6 +926,9 @@ class ApiController extends Controller
                 'message' => 'Member updated successfully',
                 'data' => $dataUser,
             ]);
+        } catch (ValidationException $e) {
+            DB::rollBack();
+            throw $e;
         } catch (\Exception $e) {
             DB::rollBack();
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);

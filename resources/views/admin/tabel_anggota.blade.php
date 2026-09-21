@@ -85,6 +85,7 @@
             <label for="foto" class="form-label">Foto <a id="star_edit_2"></a></label>
             <input type="file" class="form-control" id="foto" name="foto" accept="image/*">
           </div>
+          <input type="hidden" name="roles_present" value="1">
           <div class="row" id="hak_akses">
             @php $no = 1; @endphp
             @foreach ($roles as $item)
@@ -201,18 +202,23 @@ $(document).ready(function() {
   });
 
   function dataAkses(id) {
+    var roleInputs = $('#hak_akses input[name="roles[]"]');
+    var submitButton = $('#form_anggota button[type="submit"]');
+    submitButton.prop('disabled', true);
+    roleInputs.bootstrapToggle('off');
     $.ajax({
       url: "/tabel-anggota/data-hak-akses",
       method: "POST",
       headers: { 'X-CSRF-TOKEN': $('meta[name="csrf-token"]').attr('content') },
       data: {'id': id},
       success: function(data) {
-        var no = 1;
         data['data'].forEach(element => {
-          $(`input[value=${element.nama_role}]`).prop("checked", true);
-          $(`input[value=${element.nama_role}]`).trigger("click");
-          no++;
+          if (element.hak_akses !== 'access') return;
+          roleInputs.filter(function() {
+            return this.value === element.nama_role;
+          }).bootstrapToggle('on');
         });
+        submitButton.prop('disabled', false);
       },
       error: function(data, exception){ Toast.fire({icon:'error',title:exception}); }
     });
