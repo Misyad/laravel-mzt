@@ -41,8 +41,7 @@ class KtaPrintStateMachine
                 KtaPrintStatus::DITOLAK->value,
             ],
             KtaPrintStatus::SUDAH_DICETAK->value => [
-                KtaPrintStatus::SIAP_DIAMBIL->value, // pickup
-                KtaPrintStatus::DIKIRIM->value,      // delivery
+                KtaPrintStatus::SELESAI->value,
             ],
             KtaPrintStatus::SIAP_DIAMBIL->value => [
                 KtaPrintStatus::SELESAI->value,

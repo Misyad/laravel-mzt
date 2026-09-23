@@ -57,8 +57,13 @@ class PaymentService
             return ['ok' => false, 'message' => 'Pembayaran melebihi sisa tagihan', 'code' => 422];
         }
 
-        return DB::transaction(function () use ($actor, $order, $data, $method, $amount) {
-            $order = $order->lockForUpdate();
+        $orderId = $order->id;
+
+        return DB::transaction(function () use ($actor, $orderId, $data, $method, $amount) {
+            $order = Order::whereKey($orderId)->lockForUpdate()->first();
+            if (!$order) {
+                return ['ok' => false, 'message' => 'Order tidak ditemukan', 'code' => 404];
+            }
 
             $isImmediate = in_array($method, [PaymentMethod::CASH->value, PaymentMethod::SPONSOR->value, PaymentMethod::COMPLIMENTARY->value], true);
 
@@ -76,6 +81,7 @@ class PaymentService
                 'nomor_payment' => $this->orderNumber->nextPayment(),
                 'id_order' => $order->id,
                 'method' => $method,
+                'source' => $data['source'] ?? null,
                 'amount' => $amount,
                 'status' => $status,
                 'paid_at' => ($isImmediate ? now() : ($data['paid_at'] ?? null)),

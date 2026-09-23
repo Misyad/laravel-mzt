@@ -43,6 +43,19 @@ class TicketLifecycleTest extends TestCase
         $this->assertTrue($tickets->canIssue($free));
     }
 
+    public function testCanIssuePaidPayAtVenueOrderBeforePayment(): void
+    {
+        $tickets = new TicketService(new \App\Services\TicketNumberService());
+        $order = new \App\Models\Order([
+            'total_amount' => 50000,
+            'status_registrasi' => 'registered',
+            'payment_status' => 'pending',
+            'payment_choice' => 'pay_at_venue',
+        ]);
+
+        $this->assertTrue($tickets->canIssue($order));
+    }
+
     public function testCanIssuePaidEventOnlyWhenPaid(): void
     {
         $tickets = new TicketService(new \App\Services\TicketNumberService());

@@ -36,6 +36,10 @@ class Chackrole
             return redirect('/');
         }
 
+        if ((bool) ($user->account_setup_required ?? false)) {
+            return response('Selesaikan pengaturan akun sebelum melanjutkan.', 428);
+        }
+
         if (! array_key_exists('password_changed_at', $user->getAttributes()) || $user->password_changed_at === null) {
             return response('Anda harus mengganti password sebelum melanjutkan.', 428);
         }

@@ -6,6 +6,7 @@ use App\Models\HakAksesRole;
 use App\Models\RoleUser;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 class RoleGuard
@@ -151,12 +152,17 @@ class RoleGuard
         )));
     }
 
-    public static function replaceMemberRoles(User $user, array $roles): void
+    public static function replaceMemberRoles(User $user, array $roles, ?User $actor = null): void
     {
         $roles = self::validateMemberRoleSelection($roles);
+        sort($roles);
 
-        DB::transaction(function () use ($user, $roles): void {
+        DB::transaction(function () use ($user, $roles, $actor): void {
             User::query()->whereKey($user->id)->lockForUpdate()->firstOrFail();
+            $oldRoles = self::roleState(
+                HakAksesRole::where('id_users', $user->id)->lockForUpdate()->get(['nama_role', 'hak_akses']),
+                false
+            )['effective'];
             HakAksesRole::where('id_users', $user->id)->delete();
 
             HakAksesRole::insert(array_map(fn (string $role) => [
@@ -164,6 +170,18 @@ class RoleGuard
                 'nama_role' => $role,
                 'hak_akses' => 'access',
             ], $roles));
+
+            if ($oldRoles !== $roles && Schema::hasTable('member_role_logs')) {
+                DB::table('member_role_logs')->insert([
+                    'member_user_id' => $user->id,
+                    'actor_user_id' => $actor?->id,
+                    'old_roles' => json_encode($oldRoles),
+                    'new_roles' => json_encode($roles),
+                    'added_roles' => json_encode(array_values(array_diff($roles, $oldRoles))),
+                    'removed_roles' => json_encode(array_values(array_diff($oldRoles, $roles))),
+                    'created_at' => now(),
+                ]);
+            }
         });
     }
 

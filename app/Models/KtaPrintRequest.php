@@ -26,6 +26,9 @@ class KtaPrintRequest extends Model
     protected $guarded = [];
 
     protected $casts = [
+        'workflow_version' => 'integer',
+        'base_amount' => 'integer',
+        'gateway_fee' => 'decimal:2',
         'payment_amount' => 'decimal:2',
         'paid_at' => 'datetime',
         'submitted_at' => 'datetime',
@@ -72,6 +75,11 @@ class KtaPrintRequest extends Model
         return in_array($this->status, KtaPrintStatus::activeValues(), true);
     }
 
+    public function isLegacyWorkflow(): bool
+    {
+        return (int) $this->workflow_version < 2;
+    }
+
     /**
      * Public-facing projection — masked identity only, no raw PII.
      *
@@ -83,7 +91,9 @@ class KtaPrintRequest extends Model
             'id' => $this->id,
             'reference' => 'KTA-' . $this->id,
             'status' => $this->status,
-            'delivery_method' => $this->delivery_method,
+            'delivery_method' => $this->isLegacyWorkflow() ? $this->delivery_method : null,
+            'base_amount' => $this->base_amount,
+            'gateway_fee' => $this->gateway_fee,
             'payment_status' => $this->payment_status,
             'payment_amount' => $this->payment_amount,
             'pay_url' => $this->pay_url,
@@ -102,7 +112,9 @@ class KtaPrintRequest extends Model
         $data = [
             'reference' => 'KTA-' . $this->id,
             'status' => $this->status,
-            'delivery_method' => $this->delivery_method,
+            'delivery_method' => $this->isLegacyWorkflow() ? $this->delivery_method : null,
+            'base_amount' => $this->base_amount,
+            'gateway_fee' => $this->gateway_fee,
             'payment_status' => $this->payment_status,
             'payment_amount' => $this->payment_amount,
             'submitted_at' => optional($this->submitted_at)->toIso8601String(),

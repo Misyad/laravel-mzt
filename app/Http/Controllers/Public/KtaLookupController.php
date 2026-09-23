@@ -7,6 +7,7 @@ use App\Http\Requests\KtaCheckRequest;
 use App\Http\Requests\KtaVerifyRequest;
 use App\Services\KtaChallengeService;
 use App\Services\KtaLookupService;
+use App\Services\KtaPriceService;
 use App\Services\KtaPrintTokenService;
 
 /**
@@ -31,6 +32,7 @@ class KtaLookupController extends Controller
         protected KtaLookupService $lookup,
         protected KtaChallengeService $challenge,
         protected KtaPrintTokenService $printToken,
+        protected KtaPriceService $prices,
     ) {
     }
 
@@ -283,7 +285,7 @@ class KtaLookupController extends Controller
                 $this->challenge->ipHash($request->ip()),
                 $this->challenge->agentHash($request->userAgent()),
             );
-            $payload['print_amount'] = (int) config('kta.print.amount', 25000);
+            $payload['print_amount'] = $this->prices->currentAmount();
         }
 
         return $payload;

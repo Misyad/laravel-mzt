@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Enums\PaymentStatus;
 use App\Enums\TicketStatus;
 use App\Events\TicketStatusChanged;
+use App\Models\Order;
 use App\Models\Prisensi_kehadiran;
 use App\Models\Tanggal_event;
 use App\Models\Ticket;
@@ -11,30 +13,42 @@ use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 
-/**
- * QR Check-in — Phase 2C (PRD §12.3 / §12.4 / §17.8 / §17.14.4 / ADR-011/012).
- *
- * Ticket-based attendance: Ticket → attendance → audit. Only the
- * `issued → checked_in` transition is implemented here; `checked_in → finished`
- * belongs to a later phase and is deliberately NOT handled.
- *
- * Validation chain (READ ONLY first, then a single transaction):
- *  ticket_uuid → ticket exists → event (ticket → order → id_event)
- *  → id_tanggal belongs to that event → status must be ISSUED
- *  → duplicate scan guard → DB transaction → ticket CHECKED_IN + used_at
- *  → prisensi_kehadiran → ticket_log → DB::afterCommit
- *  → TicketStatusChanged(action='check_in').
- *
- * Legacy POST /attendance (attendanceStore) is untouched and keeps working;
- * the new columns are all nullable so both paths coexist.
- */
 class CheckInService
 {
-    /**
-     * Check a ticket in on behalf of an operator.
-     *
-     * @return array{ok: bool, message?: string, code: int, data?: array<string,mixed>}
-     */
+    public function __construct(
+        protected PaymentService $payments,
+    ) {
+    }
+
+    public function lookup(User $actor, string $identifier, int $idEvent, int $idTanggal): array
+    {
+        $ticket = Ticket::query()
+            ->where('uuid', $identifier)
+            ->orWhere('nomor_ticket', $identifier)
+            ->orWhere('qr_payload', $identifier)
+            ->first();
+
+        if (!$ticket) {
+            return ['ok' => false, 'message' => 'Tiket tidak ditemukan', 'code' => 404];
+        }
+
+        $validation = $this->validate($actor, $ticket, $idTanggal, $idEvent);
+        if (!$validation['ok']) {
+            return $validation;
+        }
+
+        if (!in_array($ticket->status, [TicketStatus::ISSUED->value, TicketStatus::CHECKED_IN->value], true)) {
+            return ['ok' => false, 'message' => 'Tiket tidak dapat digunakan pada status saat ini', 'code' => 409];
+        }
+
+        return [
+            'ok' => true,
+            'message' => 'Peserta ditemukan',
+            'code' => 200,
+            'data' => $this->scannerPayload($ticket, $validation['order']),
+        ];
+    }
+
     public function checkIn(User $actor, string $ticketUuid, int $idTanggal, ?string $gate): array
     {
         $ticket = Ticket::where('uuid', $ticketUuid)->first();
@@ -42,134 +56,124 @@ class CheckInService
             return ['ok' => false, 'message' => 'Tiket tidak ditemukan', 'code' => 404];
         }
 
-        if (!Gate::forUser($actor)->allows('checkIn', $ticket)) {
-            return ['ok' => false, 'message' => 'Forbidden', 'code' => 403];
+        $validation = $this->validate($actor, $ticket, $idTanggal);
+        if (!$validation['ok']) {
+            return $validation;
         }
 
-        // --- Exception: expired ticket (PRD §12.4 / §17.14.4) ---
-        if ($ticket->expired_at && $ticket->expired_at < now()) {
-            return ['ok' => false, 'message' => 'Tiket sudah expired', 'code' => 409];
-        }
-
-        $order = $ticket->order;
-        if (!$order) {
-            return ['ok' => false, 'message' => 'Data pesanan tidak ditemukan', 'code' => 422];
-        }
-
-        // The day must belong to the ticket's event (ticket → order → id_event).
-        $day = Tanggal_event::where('id', $idTanggal)
-            ->where('id_event', $order->id_event)
-            ->first();
-        if (!$day) {
-            return ['ok' => false, 'message' => 'Tanggal kegiatan tidak valid untuk tiket ini', 'code' => 422];
-        }
-
-        // Only issued tickets may be checked in (ADR-011). Draft / cancelled /
-        // revoked / finished are rejected; an already-checked-in ticket is a
-        // duplicate scan (PRD §12.4) answered with the first scan info.
-        $verdict = $this->verdict($ticket);
-        if ($verdict === 'duplicate') {
-            return $this->duplicate($ticket);
-        }
-        if ($verdict === 'rejected') {
-            return ['ok' => false, 'message' => 'Tiket tidak dapat digunakan pada status saat ini', 'code' => 409];
-        }
-
-        $result = DB::transaction(function () use ($actor, $ticket, $order, $idTanggal, $gate) {
-            // Concurrency gate: atomically flip issued → checked_in so a second,
-            // simultaneous scan of the same ticket updates zero rows and is
-            // answered as a duplicate instead of double-checking-in the ticket.
-            $flipped = DB::table('tickets')
-                ->where('id', $ticket->id)
-                ->where('status', TicketStatus::ISSUED->value)
-                ->update([
-                    'status' => TicketStatus::CHECKED_IN->value,
-                    'used_at' => now(),
-                    'updated_by' => $actor->id,
-                    'updated_at' => now(),
-                ]);
-
-            if ($flipped === 0) {
-                return ['conflict' => true];
+        $result = DB::transaction(function () use ($actor, $ticket, $idTanggal, $gate) {
+            $order = Order::whereKey($ticket->id_order)->lockForUpdate()->first();
+            if (!$order) {
+                return ['ok' => false, 'message' => 'Data pesanan tidak ditemukan', 'code' => 422];
             }
 
-            $scannedAt = now();
+            $lockedTicket = Ticket::whereKey($ticket->id)->lockForUpdate()->first();
+            if (!$lockedTicket) {
+                return ['ok' => false, 'message' => 'Tiket tidak ditemukan', 'code' => 404];
+            }
 
-            $attendance = Prisensi_kehadiran::create([
-                'id_event' => $order->id_event,
-                'id_tanggal' => $idTanggal,
-                'id_anggota' => $order->id_anggota,
-                'tanggal_kehadiran' => $scannedAt,
-                'jam_kehadiran' => $scannedAt->format('Y-m-d H:i:s'),
-                'id_ticket' => $ticket->id,
-                'gate' => $gate,
-                'scanned_at' => $scannedAt,
-                'scanned_by' => $actor->id,
-            ]);
+            if ($lockedTicket->status === TicketStatus::CHECKED_IN->value) {
+                return $this->duplicate($lockedTicket);
+            }
 
-            $ticket->logs()->create([
-                'id_ticket' => $ticket->id,
-                'old_status' => TicketStatus::ISSUED->value,
-                'new_status' => TicketStatus::CHECKED_IN->value,
-                'note' => 'check_in',
-                'changed_by' => $actor->id,
-            ]);
+            if ($lockedTicket->status !== TicketStatus::ISSUED->value) {
+                return ['ok' => false, 'message' => 'Tiket tidak dapat digunakan pada status saat ini', 'code' => 409];
+            }
 
-            // Transactional consistency (ADR-016): the domain signal is only
-            // emitted after the surrounding transaction really commits.
-            DB::afterCommit(fn () => event(new TicketStatusChanged(
-                $ticket,
-                TicketStatus::ISSUED->value,
-                TicketStatus::CHECKED_IN->value,
-                'check_in',
-                $actor,
-                $gate,
-            )));
+            $outstanding = $this->payments->outstanding($order);
+            if (!$this->isPaid($order, $outstanding)) {
+                return ['ok' => false, 'message' => 'Pembayaran belum lunas', 'code' => 409];
+            }
 
-            return ['conflict' => false, 'attendance' => $attendance];
+            $attendance = $this->recordAttendance($actor, $lockedTicket, $order, $idTanggal, $gate);
+
+            return ['ok' => true, 'attendance' => $attendance, 'ticket' => $lockedTicket, 'order' => $order];
         });
 
-        if ($result['conflict']) {
-            // Lost the race against a parallel scanner — re-read the freshest
-            // state so the answer is precise (duplicate vs generic rejection).
-            $fresh = Ticket::find($ticket->id);
-            if ($fresh && $fresh->status === TicketStatus::CHECKED_IN->value) {
-                return $this->duplicate($fresh);
-            }
-
-            return ['ok' => false, 'message' => 'Tiket tidak dapat digunakan pada status saat ini', 'code' => 409];
+        if (!$result['ok']) {
+            return $result;
         }
-
-        $ticket->refresh();
-
-        $participant = User::where('id_anggota', $order->id_anggota)->first();
 
         return [
             'ok' => true,
             'message' => 'Check-in berhasil',
             'code' => 200,
-            'data' => [
-                'ticket' => $ticket,
-                'attendance' => $result['attendance'],
-                'participant' => $participant ? [
-                    'id' => $participant->id,
-                    'id_anggota' => $participant->id_anggota,
-                    'name' => $participant->name,
-                ] : null,
-                'event' => [
-                    'id_event' => $order->id_event,
-                    'event_name' => $order->event_name,
-                ],
-            ],
+            'data' => $this->checkInPayload(
+                $result['ticket']->fresh(),
+                $result['order'],
+                $result['attendance']
+            ),
         ];
     }
 
-    /**
-     * Pure check-in readiness rule (ADR-011). Readable without a database so it
-     * is unit-testable exactly like TicketLifecycleService::canRevoke.
-     *
-     * @return string  'ok' | 'duplicate' | 'rejected'
-     */
+    public function admitOnsite(User $actor, string $ticketUuid, int $idTanggal, ?string $gate, float $confirmedAmount): array
+    {
+        $ticket = Ticket::where('uuid', $ticketUuid)->first();
+        if (!$ticket) {
+            return ['ok' => false, 'message' => 'Tiket tidak ditemukan', 'code' => 404];
+        }
+
+        $validation = $this->validate($actor, $ticket, $idTanggal);
+        if (!$validation['ok']) {
+            return $validation;
+        }
+
+        return DB::transaction(function () use ($actor, $ticket, $idTanggal, $gate, $confirmedAmount) {
+            $order = Order::whereKey($ticket->id_order)->lockForUpdate()->first();
+            if (!$order) {
+                return ['ok' => false, 'message' => 'Data pesanan tidak ditemukan', 'code' => 422];
+            }
+
+            $lockedTicket = Ticket::whereKey($ticket->id)->lockForUpdate()->first();
+            if (!$lockedTicket) {
+                return ['ok' => false, 'message' => 'Tiket tidak ditemukan', 'code' => 404];
+            }
+
+            if ($lockedTicket->status === TicketStatus::CHECKED_IN->value) {
+                return $this->duplicate($lockedTicket);
+            }
+
+            if ($lockedTicket->status !== TicketStatus::ISSUED->value) {
+                return ['ok' => false, 'message' => 'Tiket tidak dapat digunakan pada status saat ini', 'code' => 409];
+            }
+
+            if ($order->payment_choice !== 'pay_at_venue') {
+                return ['ok' => false, 'message' => 'Order tidak menggunakan pembayaran di tempat', 'code' => 409];
+            }
+
+            $summary = $this->payments->outstanding($order);
+            if ($this->isPaid($order, $summary)) {
+                return ['ok' => false, 'message' => 'Pembayaran sudah lunas', 'code' => 409];
+            }
+            $outstanding = $summary['outstanding'];
+
+            if ($this->amountInCents($confirmedAmount) !== $this->amountInCents($outstanding)) {
+                return ['ok' => false, 'message' => 'Nominal pembayaran tidak sesuai sisa tagihan', 'code' => 422];
+            }
+
+            $payment = $this->payments->create($actor, $order, [
+                'method' => 'cash',
+                'amount' => $outstanding,
+                'source' => 'on_site',
+                'note' => 'on_site',
+            ]);
+
+            if (!$payment['ok']) {
+                return $payment;
+            }
+
+            $attendance = $this->recordAttendance($actor, $lockedTicket, $order->fresh(), $idTanggal, $gate);
+
+            return [
+                'ok' => true,
+                'message' => 'Pembayaran dan kehadiran berhasil disimpan',
+                'code' => 200,
+                'data' => $this->scannerPayload($lockedTicket->fresh(), $order->fresh()),
+                'attendance' => $attendance,
+            ];
+        });
+    }
+
     public function verdict(Ticket $ticket): string
     {
         return match ($ticket->status) {
@@ -179,12 +183,142 @@ class CheckInService
         };
     }
 
-    /**
-     * Duplicate scan payload (PRD §12.4): first scan info only — the endpoint
-     * mutates nothing and emits no domain event.
-     *
-     * @return array{ok: false, message: string, code: int, data: array<string,mixed>}
-     */
+    protected function validate(User $actor, Ticket $ticket, int $idTanggal, ?int $idEvent = null): array
+    {
+        if (!Gate::forUser($actor)->allows('checkIn', $ticket)) {
+            return ['ok' => false, 'message' => 'Forbidden', 'code' => 403];
+        }
+
+        if ($ticket->expired_at && $ticket->expired_at < now()) {
+            return ['ok' => false, 'message' => 'Tiket sudah expired', 'code' => 409];
+        }
+
+        $order = $ticket->order;
+        if (!$order) {
+            return ['ok' => false, 'message' => 'Data pesanan tidak ditemukan', 'code' => 422];
+        }
+
+        if ($idEvent !== null && (int) $order->id_event !== $idEvent) {
+            return ['ok' => false, 'message' => 'Tiket tidak berlaku untuk event ini', 'code' => 422];
+        }
+
+        $day = Tanggal_event::where('id', $idTanggal)
+            ->where('id_event', $order->id_event)
+            ->first();
+        if (!$day) {
+            return ['ok' => false, 'message' => 'Tanggal kegiatan tidak valid untuk tiket ini', 'code' => 422];
+        }
+
+        return ['ok' => true, 'order' => $order, 'day' => $day];
+    }
+
+    protected function recordAttendance(User $actor, Ticket $ticket, Order $order, int $idTanggal, ?string $gate): Prisensi_kehadiran
+    {
+        $scannedAt = now();
+
+        $ticket->forceFill([
+            'status' => TicketStatus::CHECKED_IN->value,
+            'used_at' => $scannedAt,
+            'updated_by' => $actor->id,
+        ])->save();
+
+        $attendance = Prisensi_kehadiran::create([
+            'id_event' => $order->id_event,
+            'id_tanggal' => $idTanggal,
+            'id_anggota' => $order->id_anggota,
+            'tanggal_kehadiran' => $scannedAt,
+            'jam_kehadiran' => $scannedAt->format('Y-m-d H:i:s'),
+            'id_ticket' => $ticket->id,
+            'gate' => $gate,
+            'scanned_at' => $scannedAt,
+            'scanned_by' => $actor->id,
+        ]);
+
+        $ticket->logs()->create([
+            'id_ticket' => $ticket->id,
+            'old_status' => TicketStatus::ISSUED->value,
+            'new_status' => TicketStatus::CHECKED_IN->value,
+            'note' => 'check_in',
+            'changed_by' => $actor->id,
+        ]);
+
+        DB::afterCommit(fn () => event(new TicketStatusChanged(
+            $ticket,
+            TicketStatus::ISSUED->value,
+            TicketStatus::CHECKED_IN->value,
+            'check_in',
+            $actor,
+            $gate,
+        )));
+
+        return $attendance;
+    }
+
+    protected function checkInPayload(Ticket $ticket, Order $order, Prisensi_kehadiran $attendance): array
+    {
+        $participant = User::where('id_anggota', $order->id_anggota)->first();
+
+        return [
+            'ticket' => $ticket,
+            'attendance' => $attendance,
+            'participant' => $participant ? [
+                'id' => $participant->id,
+                'id_anggota' => $participant->id_anggota,
+                'name' => $participant->name,
+            ] : null,
+            'event' => [
+                'id_event' => $order->id_event,
+                'event_name' => $order->event_name,
+            ],
+        ];
+    }
+
+    protected function scannerPayload(Ticket $ticket, Order $order): array
+    {
+        $participant = User::where('id_anggota', $order->id_anggota)->first();
+        $attendance = Prisensi_kehadiran::where('id_ticket', $ticket->id)->orderBy('id')->first();
+        $paidPayment = $order->payments()
+            ->where('status', PaymentStatus::PAID->value)
+            ->latest('id')
+            ->first();
+        $outstanding = $this->payments->outstanding($order);
+        $paid = $this->isPaid($order, $outstanding);
+        $paymentAmount = $paid && $outstanding['paid'] <= config('payment.amount_epsilon', 0.001)
+            ? (float) $order->total_amount
+            : ($paid ? $outstanding['paid'] : $outstanding['outstanding']);
+
+        return [
+            'ticket' => [
+                'id' => $ticket->id,
+                'uuid' => $ticket->uuid,
+                'nomor_ticket' => $ticket->nomor_ticket,
+                'status' => $ticket->status,
+            ],
+            'participant' => [
+                'id' => $participant?->id,
+                'id_anggota' => $order->id_anggota,
+                'name' => $participant?->name ?? 'Peserta',
+            ],
+            'event' => [
+                'id_event' => $order->id_event,
+                'event_name' => $order->event_name,
+            ],
+            'payment' => [
+                'choice' => $order->payment_choice ?: 'pay_now',
+                'status' => $paid ? PaymentStatus::PAID->value : PaymentStatus::PENDING->value,
+                'amount' => $paymentAmount,
+                'source' => $paidPayment?->source ?: $paidPayment?->method,
+                'paid_at' => $paidPayment?->paid_at?->toIso8601String(),
+            ],
+            'attendance' => [
+                'status' => $attendance ? 'present' : 'not_present',
+                'scanned_at' => $attendance?->scanned_at?->toIso8601String(),
+                'scanned_by' => $attendance?->scanned_by,
+                'gate' => $attendance?->gate,
+            ],
+        ];
+    }
+
     protected function duplicate(Ticket $ticket): array
     {
         $first = Prisensi_kehadiran::where('id_ticket', $ticket->id)
@@ -200,5 +334,16 @@ class CheckInService
                 'first_scanned_by' => $first?->scanned_by,
             ],
         ];
+    }
+
+    protected function isPaid(Order $order, array $summary): bool
+    {
+        return $order->payment_status === PaymentStatus::PAID->value
+            || $summary['outstanding'] <= config('payment.amount_epsilon', 0.001);
+    }
+
+    protected function amountInCents(float $amount): int
+    {
+        return (int) round($amount * 100);
     }
 }

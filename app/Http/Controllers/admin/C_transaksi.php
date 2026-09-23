@@ -148,7 +148,6 @@ class C_transaksi extends Controller
 
             $status = $existingUser->update([
                 'name' => $request->nama,
-                'email' => $request->email,
             ]);
 
             if($file_status){

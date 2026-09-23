@@ -2,42 +2,46 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Schema;
-use Illuminate\Validation\ValidationException;
-use App\Models\User;
-use App\Models\DataUser;
-use App\Models\Event;
+use App\Models\Activitas_log;
 use App\Models\Berita;
 use App\Models\Carosel;
-use App\Models\Info_pesantren;
-use App\Models\Tentang_mzt;
-use App\Models\Activitas_log;
-use App\Models\Prisensi_kehadiran;
-use App\Models\Transaksi_event;
+use App\Models\DataUser;
+use App\Models\Event;
 use App\Models\HakAksesRole;
-use App\Models\Tanggal_event;
-use App\Models\TemplateIdCard;
+use App\Models\Info_pesantren;
 use App\Models\Kontak;
 use App\Models\Order;
+use App\Models\Prisensi_kehadiran;
 use App\Models\RoleUser;
+use App\Models\Tanggal_event;
+use App\Models\Tentang_mzt;
+use App\Models\Transaksi_event;
+use App\Models\User;
+use App\Services\CredentialRevocationService;
+use App\Services\MemberIdentityService;
 use App\Services\RegistrationService;
-use App\Services\EventCapacityService;
+use App\Support\Content;
+use App\Support\Dashboard;
+use App\Support\HtmlSanitizer;
+use App\Support\MemberManagement;
+use App\Support\RoleGuard;
 use Carbon\Carbon;
-use Laravel\Sanctum\TransientToken;
-use Illuminate\Support\Str;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
-use App\Support\Dashboard;
-use App\Support\MemberManagement;
-use App\Support\Content;
-use App\Support\HtmlSanitizer;
-use App\Support\RoleGuard;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use Laravel\Sanctum\TransientToken;
 
 class ApiController extends Controller
 {
+    public function __construct(
+        private ?CredentialRevocationService $revocation = null,
+        private ?MemberIdentityService $identity = null
+    ) {}
+
     /**
      * AUTH ENDPOINTS
      */
@@ -77,6 +81,7 @@ class ApiController extends Controller
             'roles' => $roles,
             'foto' => $userData ? $userData->foto : null,
             'must_change_password' => $user->password_changed_at === null,
+            'account_setup_required' => (bool) ($user->account_setup_required ?? false),
         ];
 
         // First-party browser (Sanctum stateful) request: establish a HttpOnly
@@ -140,6 +145,7 @@ class ApiController extends Controller
                 'foto' => $userData ? $userData->foto : null,
                 'data' => $userData,
                 'must_change_password' => $user->password_changed_at === null,
+                'account_setup_required' => (bool) ($user->account_setup_required ?? false),
             ],
         ]);
     }
@@ -163,6 +169,7 @@ class ApiController extends Controller
                 'roles' => $roles,
                 'foto' => $userData ? $userData->foto : null,
                 'must_change_password' => $user->password_changed_at === null,
+                'account_setup_required' => (bool) ($user->account_setup_required ?? false),
             ],
         ]);
     }
@@ -217,6 +224,9 @@ class ApiController extends Controller
 
         $user = $request->user();
         $data = DataUser::where('id_users', $user->id)->first();
+        if ($request->filled('email')) {
+            $this->memberIdentity()->updateUserEmail($user, $request->email);
+        }
 
         $foto = $data ? $data->foto : null;
         if ($request->hasFile('foto')) {
@@ -231,10 +241,6 @@ class ApiController extends Controller
                 'tempat_lahir' => $request->input('tempat_lahir', $data->tempat_lahir),
                 'foto' => $foto,
             ]);
-        }
-
-        if ($request->filled('email')) {
-            $user->update(['email' => $request->email]);
         }
 
         return response()->json([
@@ -264,7 +270,7 @@ class ApiController extends Controller
             'password' => 'required|string|min:8|confirmed',
         ]);
 
-        if ($request->password === 'mzt1234') {
+        if ($request->password === 'mzt12345') {
             throw ValidationException::withMessages([
                 'password' => ['Password baru tidak boleh menggunakan password sementara.'],
             ]);
@@ -283,7 +289,7 @@ class ApiController extends Controller
             ]);
         }
 
-        if (! $this->databaseSessionsAvailable()) {
+        if (! $this->credentialRevocation()->sessionsAtomicallyRevocable()) {
             return $this->sessionRevocationUnavailable();
         }
 
@@ -314,13 +320,12 @@ class ApiController extends Controller
                 'remember_token' => Str::random(60),
             ])->save();
 
-            $user->tokens()->delete();
             if (! $isPatCaller && ($currentSessionId === null || $currentSessionId === '')) {
                 throw ValidationException::withMessages([
                     'session' => ['Sesi browser saat ini tidak tersedia.'],
                 ]);
             }
-            $this->deleteDatabaseSessions($user->id, $isPatCaller ? null : $currentSessionId);
+            $this->credentialRevocation()->revoke($user, $isPatCaller ? null : $currentSessionId);
 
             $caller->setRawAttributes($user->getAttributes(), true);
         });
@@ -428,7 +433,7 @@ class ApiController extends Controller
             ]);
         }
 
-        if (! $this->databaseSessionsAvailable()) {
+        if (! $this->credentialRevocation()->sessionsAtomicallyRevocable()) {
             return $this->sessionRevocationUnavailable();
         }
 
@@ -457,17 +462,18 @@ class ApiController extends Controller
             }
 
             $user->forceFill([
-                'password' => Hash::make('mzt1234'),
+                'password' => Hash::make('mzt12345'),
                 'password_changed_at' => null,
+                'account_setup_required' => true,
+                'account_claimed_at' => null,
                 'remember_token' => Str::random(60),
             ])->save();
 
-            $user->tokens()->delete();
-            $this->deleteDatabaseSessions($user->id);
+            $this->credentialRevocation()->revoke($user);
 
             Activitas_log::insert([
-                'subject' => 'reset password akun anggota #' . $user->id,
-                'url' => '/api/members/' . $user->id . '/account',
+                'subject' => 'reset password akun anggota #'.$user->id,
+                'url' => '/api/members/'.$user->id.'/account',
                 'method' => 'PUT',
                 'agent' => null,
                 'user_id' => (string) $request->user()->id,
@@ -490,7 +496,6 @@ class ApiController extends Controller
             'success' => true,
             'message' => 'Password berhasil di-reset.',
             'data' => [
-                'temporary_password' => 'mzt1234',
                 'must_change_password' => true,
             ],
         ]);
@@ -557,55 +562,14 @@ class ApiController extends Controller
         return ['eligible' => false, 'reason_code' => $code, 'reason' => $reason];
     }
 
-    private function databaseSessionsAvailable(): bool
+    private function credentialRevocation(): CredentialRevocationService
     {
-        if (config('session.driver') !== 'database') {
-            return false;
-        }
-
-        try {
-            $connection = $this->sessionConnectionName();
-            $schema = $connection ? Schema::connection($connection) : Schema::getFacadeRoot();
-            $table = config('session.table', 'sessions');
-
-            return $schema->hasTable($table)
-                && $schema->hasColumn($table, 'id')
-                && $schema->hasColumn($table, 'user_id');
-        } catch (\Throwable $exception) {
-            return false;
-        }
+        return $this->revocation ??= app(CredentialRevocationService::class);
     }
 
-    private function databaseSessionsAtomicallyRevocable(): bool
+    private function memberIdentity(): MemberIdentityService
     {
-        try {
-            $modelConnection = (new User)->getConnectionName() ?: DB::getDefaultConnection();
-            $sessionConnection = $this->sessionConnectionName() ?: DB::getDefaultConnection();
-
-            return $modelConnection === $sessionConnection && $this->databaseSessionsAvailable();
-        } catch (\Throwable $exception) {
-            return false;
-        }
-    }
-
-    private function deleteDatabaseSessions(int $userId, ?string $exceptSessionId = null): void
-    {
-        $query = DB::connection($this->sessionConnectionName())
-            ->table(config('session.table', 'sessions'))
-            ->where('user_id', $userId);
-
-        if ($exceptSessionId !== null && $exceptSessionId !== '') {
-            $query->where('id', '!=', $exceptSessionId);
-        }
-
-        $query->delete();
-    }
-
-    private function sessionConnectionName(): ?string
-    {
-        $connection = config('session.connection');
-
-        return is_string($connection) && $connection !== '' ? $connection : null;
+        return $this->identity ??= app(MemberIdentityService::class);
     }
 
     private function sessionRevocationUnavailable(?string $message = null)
@@ -628,7 +592,7 @@ class ApiController extends Controller
             'is_active' => 'required|string|in:1,0',
         ]);
 
-        if ($request->is_active === '0' && ! $this->databaseSessionsAtomicallyRevocable()) {
+        if ($request->is_active === '0' && ! $this->credentialRevocation()->sessionsAtomicallyRevocable()) {
             return $this->sessionRevocationUnavailable(
                 'Akun tidak dapat dinonaktifkan karena pencabutan sesi lengkap tidak tersedia.'
             );
@@ -663,8 +627,7 @@ class ApiController extends Controller
             $profiles->first()->forceFill(['is_active' => $request->is_active])->save();
 
             if ($request->is_active === '0') {
-                $user->tokens()->delete();
-                $this->deleteDatabaseSessions($user->id);
+                $this->credentialRevocation()->revoke($user);
             }
 
             return ['status' => 200];
@@ -694,11 +657,11 @@ class ApiController extends Controller
         $event = Event::where('is_active', '1')->count();
         $event_selesai = DB::table('event_status')
             ->where('is_active', '1')
-            ->whereRaw("status COLLATE utf8mb4_unicode_ci = ?", ['Complate'])
+            ->whereRaw('status COLLATE utf8mb4_unicode_ci = ?', ['Complate'])
             ->count();
         $event_mendatang = DB::table('event_status')
             ->where('is_active', '1')
-            ->whereRaw("status COLLATE utf8mb4_unicode_ci = ?", ['Upcomming'])
+            ->whereRaw('status COLLATE utf8mb4_unicode_ci = ?', ['Upcomming'])
             ->count();
         $total_anggota = DataUser::where('is_active', '1')->count();
 
@@ -728,13 +691,13 @@ class ApiController extends Controller
             $start_date = Carbon::createFromFormat('d/m/Y', $start_date)->format('Y-m-d');
             $end_date = Carbon::createFromFormat('d/m/Y', $end_date)->addDay()->format('Y-m-d');
 
-            $warna = "";
-            if ($val->status == "Ongoing") {
-                $warna = "#3abaf4";
-            } elseif ($val->status == "Complate") {
-                $warna = "#47c363";
-            } elseif ($val->status == "Upcomming") {
-                $warna = "#ffa426";
+            $warna = '';
+            if ($val->status == 'Ongoing') {
+                $warna = '#3abaf4';
+            } elseif ($val->status == 'Complate') {
+                $warna = '#47c363';
+            } elseif ($val->status == 'Upcomming') {
+                $warna = '#ffa426';
             }
 
             $data_array[] = [
@@ -814,6 +777,7 @@ class ApiController extends Controller
                 'last_login' => $m->user ? $m->user->last_login : null,
             ];
         });
+
         return response()->json([
             'success' => true,
             'data' => $data,
@@ -905,7 +869,7 @@ class ApiController extends Controller
             return response()->json(['success' => false, 'message' => 'Member not found'], 404);
         }
 
-        RoleGuard::replaceMemberRoles($user, $request->input('roles'));
+        RoleGuard::replaceMemberRoles($user, $request->input('roles'), $request->user());
 
         return $this->memberRolesShow($request, $id);
     }
@@ -915,7 +879,7 @@ class ApiController extends Controller
         Gate::forUser($request->user())->authorize('viewDirectory', MemberManagement::class);
 
         $member = DataUser::with('user')->where('id_users', $id)->first();
-        if (!$member) {
+        if (! $member) {
             return response()->json(['success' => false, 'message' => 'Member not found'], 404);
         }
         $data = [
@@ -934,6 +898,7 @@ class ApiController extends Controller
             'tempat_lahir' => $member->tempat_lahir ?? '',
             'tanggal_lahir' => $member->tanggal_lahir,
         ];
+
         return response()->json(['success' => true, 'data' => $data]);
     }
 
@@ -961,6 +926,7 @@ class ApiController extends Controller
             'tahun_masuk' => 'required|date',
             'tahun_keluar' => 'required|date',
             'no_hp' => 'required|string',
+            'email' => 'nullable|email|max:255',
             'roles' => 'sometimes|array',
             'roles.*' => 'string|distinct:strict|max:255',
             'password' => 'prohibited',
@@ -976,11 +942,14 @@ class ApiController extends Controller
         DB::beginTransaction();
         try {
             $dataUser = DataUser::where('id_users', $id)->first();
-            if (!$dataUser) {
+            if (! $dataUser) {
                 return response()->json(['success' => false, 'message' => 'Member not found'], 404);
             }
 
             $user = User::find($id);
+            if ($request->filled('email')) {
+                $this->memberIdentity()->updateUserEmail($user, $request->email);
+            }
 
             // Handle photo upload
             $foto = $dataUser->foto;
@@ -1002,16 +971,14 @@ class ApiController extends Controller
             ]);
 
             // Update user
-            $user->update([
-                'name' => $request->nama,
-                'email' => $request->email ?? '',
-            ]);
+            $user->update(['name' => $request->nama]);
 
             if ($submittedRoles !== null) {
-                RoleGuard::replaceMemberRoles($user, $submittedRoles);
+                RoleGuard::replaceMemberRoles($user, $submittedRoles, $request->user());
             }
 
             DB::commit();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Member updated successfully',
@@ -1022,6 +989,7 @@ class ApiController extends Controller
             throw $e;
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
@@ -1043,6 +1011,7 @@ class ApiController extends Controller
     public function eventsIndex()
     {
         $events = Event::where('is_active', '1')->get();
+
         return response()->json([
             'success' => true,
             'data' => $events,
@@ -1052,9 +1021,10 @@ class ApiController extends Controller
     public function eventsShow($id)
     {
         $event = Event::where('id', $id)->where('is_active', '1')->first();
-        if (!$event) {
+        if (! $event) {
             return response()->json(['success' => false, 'message' => 'Event not found'], 404);
         }
+
         return response()->json(['success' => true, 'data' => $event]);
     }
 
@@ -1109,6 +1079,7 @@ class ApiController extends Controller
             ]);
 
             DB::commit();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Event created successfully',
@@ -1116,6 +1087,7 @@ class ApiController extends Controller
             ], 201);
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
@@ -1125,7 +1097,7 @@ class ApiController extends Controller
         Gate::forUser($request->user())->authorize('manageEvents', Content::class);
         $request->validate([
             'judul_event' => 'required|string|max:255',
-            'slug' => 'required|string|unique:events,slug,' . $id,
+            'slug' => 'required|string|unique:events,slug,'.$id,
             'lokasi' => 'required|string',
             'harga' => 'required|numeric',
             'deskripsi' => 'required|string',
@@ -1140,7 +1112,7 @@ class ApiController extends Controller
         DB::beginTransaction();
         try {
             $event = Event::where('id', $id)->where('is_active', '1')->first();
-            if (!$event) {
+            if (! $event) {
                 return response()->json(['success' => false, 'message' => 'Event not found'], 404);
             }
 
@@ -1174,6 +1146,7 @@ class ApiController extends Controller
             ]);
 
             DB::commit();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Event updated successfully',
@@ -1181,6 +1154,7 @@ class ApiController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
@@ -1189,11 +1163,12 @@ class ApiController extends Controller
     {
         Gate::forUser($request->user())->authorize('manageEvents', Content::class);
         $event = Event::where('id', $id)->where('is_active', '1')->first();
-        if (!$event) {
+        if (! $event) {
             return response()->json(['success' => false, 'message' => 'Event not found'], 404);
         }
 
         $event->update(['is_active' => '0']);
+
         return response()->json(['success' => true, 'message' => 'Event deleted successfully']);
     }
 
@@ -1203,13 +1178,17 @@ class ApiController extends Controller
      */
     public function registerEvent(Request $request, RegistrationService $registration, $id)
     {
+        $validated = $request->validate([
+            'payment_choice' => ['required', 'in:pay_now,pay_at_venue'],
+        ]);
+
         $user = $request->user();
-        if (!$user->id_anggota) {
+        if (! $user->id_anggota) {
             return response()->json(['success' => false, 'message' => 'Akun tanpa nomor anggota'], 422);
         }
 
-        $result = $registration->register($user, (int) $id);
-        if (!$result['ok']) {
+        $result = $registration->register($user, (int) $id, $validated['payment_choice']);
+        if (! $result['ok']) {
             return response()->json(['success' => false, 'message' => $result['message']], $result['code']);
         }
 
@@ -1228,8 +1207,10 @@ class ApiController extends Controller
     {
         $user = $request->user();
         $orders = Order::where('id_anggota', $user->id_anggota)
+            ->with('payments')
             ->orderByDesc('created_at')
-            ->get();
+            ->get()
+            ->map(fn (Order $order) => $this->eventOrderPayload($order));
 
         return response()->json(['success' => true, 'data' => $orders]);
     }
@@ -1241,7 +1222,7 @@ class ApiController extends Controller
     public function orderShow(Request $request, $uuid)
     {
         $order = Order::where('uuid', $uuid)->first();
-        if (!$order) {
+        if (! $order) {
             return response()->json(['success' => false, 'message' => 'Order not found'], 404);
         }
 
@@ -1250,11 +1231,27 @@ class ApiController extends Controller
         $isOwner = $user->id_anggota === $order->id_anggota;
         $isStaff = in_array('admin', $roles, true);
 
-        if (!$isOwner && !$isStaff) {
+        if (! $isOwner && ! $isStaff) {
             return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
         }
 
-        return response()->json(['success' => true, 'data' => $order]);
+        return response()->json([
+            'success' => true,
+            'data' => $this->eventOrderPayload($order->load('payments')),
+        ]);
+    }
+
+    private function eventOrderPayload(Order $order): array
+    {
+        $paidPayments = $order->payments
+            ->where('status', 'paid');
+        $latest = $paidPayments->sortByDesc('id')->first();
+
+        return array_merge($order->attributesToArray(), [
+            'payment_amount' => $paidPayments->sum(fn ($payment) => (float) $payment->amount),
+            'payment_source' => $latest?->source ?: $latest?->method,
+            'paid_at' => $latest?->paid_at?->toIso8601String(),
+        ]);
     }
 
     /**
@@ -1276,6 +1273,7 @@ class ApiController extends Controller
     public function newsIndex()
     {
         $news = Berita::where('is_active', '1')->get();
+
         return response()->json([
             'success' => true,
             'data' => $news,
@@ -1285,9 +1283,10 @@ class ApiController extends Controller
     public function newsShow($id)
     {
         $news = Berita::where('id', $id)->where('is_active', '1')->first();
-        if (!$news) {
+        if (! $news) {
             return response()->json(['success' => false, 'message' => 'News not found'], 404);
         }
+
         return response()->json(['success' => true, 'data' => $news]);
     }
 
@@ -1317,6 +1316,7 @@ class ApiController extends Controller
             ]);
 
             DB::commit();
+
             return response()->json([
                 'success' => true,
                 'message' => 'News created successfully',
@@ -1324,6 +1324,7 @@ class ApiController extends Controller
             ], 201);
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
@@ -1333,14 +1334,14 @@ class ApiController extends Controller
         Gate::forUser($request->user())->authorize('manageContent', Content::class);
         $request->validate([
             'judul' => 'required|string|max:255',
-            'slug' => 'required|string|unique:beritas,slug,' . $id,
+            'slug' => 'required|string|unique:beritas,slug,'.$id,
             'deskripsi' => 'required|string',
         ]);
 
         DB::beginTransaction();
         try {
             $news = Berita::where('id', $id)->where('is_active', '1')->first();
-            if (!$news) {
+            if (! $news) {
                 return response()->json(['success' => false, 'message' => 'News not found'], 404);
             }
 
@@ -1357,6 +1358,7 @@ class ApiController extends Controller
             ]);
 
             DB::commit();
+
             return response()->json([
                 'success' => true,
                 'message' => 'News updated successfully',
@@ -1364,6 +1366,7 @@ class ApiController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
@@ -1372,11 +1375,12 @@ class ApiController extends Controller
     {
         Gate::forUser($request->user())->authorize('manageContent', Content::class);
         $news = Berita::where('id', $id)->where('is_active', '1')->first();
-        if (!$news) {
+        if (! $news) {
             return response()->json(['success' => false, 'message' => 'News not found'], 404);
         }
 
         $news->update(['is_active' => '0']);
+
         return response()->json(['success' => true, 'message' => 'News deleted successfully']);
     }
 
@@ -1395,6 +1399,7 @@ class ApiController extends Controller
                 $data = $row->toArray();
                 unset($data['dataUser']);
                 $data['dataUser'] = $row->dataUser ? ['id' => $row->dataUser->id, 'nama' => $row->dataUser->name] : null;
+
                 return $data;
             });
 
@@ -1417,12 +1422,12 @@ class ApiController extends Controller
         DB::beginTransaction();
         try {
             $user = User::where('id_anggota', $request->id_anggota)->first();
-            if (!$user) {
+            if (! $user) {
                 return response()->json(['success' => false, 'message' => 'Member not found'], 404);
             }
 
             $dataUser = DataUser::where('id_users', $user->id)->first();
-            if (!$dataUser) {
+            if (! $dataUser) {
                 return response()->json(['success' => false, 'message' => 'Member data not found'], 404);
             }
 
@@ -1449,6 +1454,7 @@ class ApiController extends Controller
             ]);
 
             DB::commit();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Attendance recorded successfully',
@@ -1456,6 +1462,7 @@ class ApiController extends Controller
             ], 201);
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
@@ -1474,6 +1481,7 @@ class ApiController extends Controller
                 $data = $row->toArray();
                 unset($data['dataUser']);
                 $data['dataUser'] = $row->dataUser ? ['id' => $row->dataUser->id, 'nama' => $row->dataUser->name] : null;
+
                 return $data;
             });
 
@@ -1489,6 +1497,7 @@ class ApiController extends Controller
     public function carouselIndex()
     {
         $carousel = Carosel::orderBy('id')->get();
+
         return response()->json([
             'success' => true,
             'data' => $carousel,
@@ -1500,7 +1509,7 @@ class ApiController extends Controller
         Gate::forUser($request->user())->authorize('manageContent', Content::class);
 
         $carousel = Carosel::where('id', $id)->first();
-        if (!$carousel) {
+        if (! $carousel) {
             return response()->json(['success' => false, 'message' => 'Carousel not found'], 404);
         }
 
@@ -1519,6 +1528,7 @@ class ApiController extends Controller
     public function infoPesantren()
     {
         $info = Info_pesantren::first();
+
         return response()->json([
             'success' => true,
             'data' => $info,
@@ -1536,7 +1546,7 @@ class ApiController extends Controller
         ]);
 
         $info = Info_pesantren::first();
-        if (!$info) {
+        if (! $info) {
             return response()->json(['success' => false, 'message' => 'Info not found'], 404);
         }
 
@@ -1568,6 +1578,7 @@ class ApiController extends Controller
     public function infoMzt()
     {
         $info = Tentang_mzt::first();
+
         return response()->json([
             'success' => true,
             'data' => $info,
@@ -1585,7 +1596,7 @@ class ApiController extends Controller
         ]);
 
         $info = Tentang_mzt::first();
-        if (!$info) {
+        if (! $info) {
             return response()->json(['success' => false, 'message' => 'Info not found'], 404);
         }
 
@@ -1682,6 +1693,7 @@ class ApiController extends Controller
             'tahun_masuk' => 'required|date',
             'tahun_keluar' => 'required|date',
             'no_hp' => 'required|string',
+            'email' => 'nullable|email|max:255',
             'password' => 'prohibited',
             'password_confirmation' => 'prohibited',
         ]);
@@ -1690,6 +1702,9 @@ class ApiController extends Controller
         try {
             $user = $request->user();
             $dataUser = DataUser::where('id_users', $user->id)->first();
+            if ($request->filled('email')) {
+                $this->memberIdentity()->updateUserEmail($user, $request->email);
+            }
 
             $foto = $dataUser ? $dataUser->foto : '';
             if ($request->hasFile('foto')) {
@@ -1711,19 +1726,21 @@ class ApiController extends Controller
                 ]);
             }
 
-            $user->update([
-                'name' => $request->nama,
-                'email' => $request->email ?? '',
-            ]);
+            $user->update(['name' => $request->nama]);
 
             DB::commit();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Profile updated successfully',
                 'data' => $dataUser,
             ]);
+        } catch (ValidationException $e) {
+            DB::rollBack();
+            throw $e;
         } catch (\Exception $e) {
             DB::rollBack();
+
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
@@ -1740,11 +1757,11 @@ class ApiController extends Controller
         $event = Event::where('is_active', '1')->count();
         $event_selesai = DB::table('event_status')
             ->where('is_active', '1')
-            ->whereRaw("status COLLATE utf8mb4_unicode_ci = ?", ['Complate'])
+            ->whereRaw('status COLLATE utf8mb4_unicode_ci = ?', ['Complate'])
             ->count();
         $event_mendatang = DB::table('event_status')
             ->where('is_active', '1')
-            ->whereRaw("status COLLATE utf8mb4_unicode_ci = ?", ['Upcomming'])
+            ->whereRaw('status COLLATE utf8mb4_unicode_ci = ?', ['Upcomming'])
             ->count();
         $total_anggota = DataUser::where('is_active', '1')->count();
 
@@ -1783,6 +1800,3 @@ class ApiController extends Controller
         ], 201);
     }
 }
-
-
-

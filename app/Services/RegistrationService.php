@@ -35,8 +35,12 @@ class RegistrationService
      *
      * @return array{ok: bool, order?: \App\Models\Order, message?: string, code: int}
      */
-    public function register(User $user, int $eventId): array
+    public function register(User $user, int $eventId, string $paymentChoice = 'pay_now'): array
     {
+        if (!in_array($paymentChoice, ['pay_now', 'pay_at_venue'], true)) {
+            return ['ok' => false, 'message' => 'Pilihan pembayaran tidak valid', 'code' => 422];
+        }
+
         // Pre-checks that do not need a lock (visibility, window) are done
         // outside the critical section for fast-fail. Capacity is re-checked
         // inside the lock so concurrent requests cannot both pass.
@@ -51,7 +55,7 @@ class RegistrationService
         }
 
         try {
-            return DB::transaction(function () use ($user, $eventId) {
+            return DB::transaction(function () use ($user, $eventId, $paymentChoice) {
                 // Critical section: serialize on the event row.
                 $event = Event::where('id', $eventId)->lockForUpdate()->first();
                 if (!$event) {
@@ -83,9 +87,9 @@ class RegistrationService
                     'total_amount' => $event->harga_amount ?: 0,
                     'status_registrasi' => OrderStatus::REGISTERED->value,
                     'payment_status' => PaymentStatus::PENDING->value,
+                    'payment_choice' => $paymentChoice,
                 ]);
 
-                // Free event → ticket issued immediately (PRD §10.3).
                 $ticket = null;
                 if ($this->tickets->canIssue($order)) {
                     $issued = $this->tickets->generate($user, $order);
@@ -96,7 +100,7 @@ class RegistrationService
             });
         } catch (\Illuminate\Database\QueryException $e) {
             // Unique (id_event, id_anggota) violated by a concurrent winner.
-            if (str_contains($e->getMessage(), 'Duplicate entry') || $e->errorInfo[1] ?? null === 1062) {
+            if (str_contains($e->getMessage(), 'Duplicate entry') || ($e->errorInfo[1] ?? null) === 1062) {
                 return ['ok' => false, 'message' => 'Anda sudah mendaftar untuk event ini', 'code' => 409];
             }
             throw $e;

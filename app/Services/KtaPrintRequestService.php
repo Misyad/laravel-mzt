@@ -24,6 +24,12 @@ use Illuminate\Support\Facades\DB;
  */
 class KtaPrintRequestService
 {
+    public function __construct(
+        protected KtaPriceService $prices,
+        protected PaymenkuService $paymenku,
+    ) {
+    }
+
     /**
      * Find the member's active request, if any.
      */
@@ -51,10 +57,9 @@ class KtaPrintRequestService
      * second one. Race-safe: `active_key` has a unique index, so two concurrent
      * inserts collide and the loser re-reads the winner.
      *
-     * @param  array{delivery_method: string, recipient_name?: ?string, recipient_phone?: ?string, shipping_address?: ?string}  $data
      * @return array{ok: bool, code: int, message: string, request?: KtaPrintRequest, created?: bool}
      */
-    public function createForUser(User $user, array $data): array
+    public function createForUser(User $user, array $data = []): array
     {
         if ((string) $user->is_active !== '1') {
             return ['ok' => false, 'code' => 403, 'message' => 'Akun anggota tidak aktif'];
@@ -65,19 +70,19 @@ class KtaPrintRequestService
             return ['ok' => true, 'code' => 200, 'message' => 'Pengajuan KTA sudah ada', 'request' => $existing, 'created' => false];
         }
 
-        $method = $data['delivery_method'] === 'delivery' ? 'delivery' : 'pickup';
-
         try {
-            $request = DB::transaction(function () use ($user, $data, $method) {
+            $request = DB::transaction(function () use ($user) {
                 $request = KtaPrintRequest::create([
                     'id_users' => $user->id,
                     'id_anggota_snapshot' => (string) $user->id_anggota,
+                    'workflow_version' => 2,
                     'status' => KtaPrintStatus::MENUNGGU_PEMBAYARAN->value,
-                    'delivery_method' => $method,
+                    'delivery_method' => 'none',
+                    'base_amount' => $this->prices->snapshotAmount(),
                     'payment_status' => 'pending',
-                    'recipient_name' => $method === 'delivery' ? ($data['recipient_name'] ?? null) : null,
-                    'recipient_phone' => $method === 'delivery' ? ($data['recipient_phone'] ?? null) : null,
-                    'shipping_address' => $method === 'delivery' ? ($data['shipping_address'] ?? null) : null,
+                    'recipient_name' => null,
+                    'recipient_phone' => null,
+                    'shipping_address' => null,
                     'submitted_at' => now(),
                     'active_key' => $user->id,
                 ]);
@@ -111,17 +116,107 @@ class KtaPrintRequestService
         ?string $payUrl,
         ?string $channel,
     ): KtaPrintRequest {
-        $request->forceFill([
-            'payment_provider' => 'paymenku',
-            'payment_reference' => $reference,
-            'payment_trx_id' => $trxId,
-            'payment_amount' => $amount,
-            'payment_status' => 'pending',
-            'pay_url' => $payUrl,
-            'payment_channel' => $channel,
-        ])->save();
+        return DB::transaction(function () use ($request, $reference, $trxId, $amount, $payUrl, $channel) {
+            $locked = KtaPrintRequest::whereKey($request->id)->lockForUpdate()->firstOrFail();
+            if ($locked->payment_trx_id !== null) {
+                return $locked;
+            }
 
-        return $request->fresh();
+            $baseAmount = (float) ($locked->base_amount ?? 0);
+            $locked->forceFill([
+                'payment_provider' => 'paymenku',
+                'payment_reference' => $reference,
+                'payment_trx_id' => $trxId,
+                'gateway_fee' => max(0, $amount - $baseAmount),
+                'payment_amount' => $amount,
+                'payment_status' => 'pending',
+                'pay_url' => $payUrl,
+                'payment_channel' => $channel,
+            ])->save();
+
+            return $locked->fresh();
+        });
+    }
+
+    public function ensurePayment(User $user, KtaPrintRequest $request): array
+    {
+        $locked = DB::transaction(fn () => KtaPrintRequest::whereKey($request->id)->lockForUpdate()->firstOrFail());
+        if ($locked->payment_trx_id !== null) {
+            return ['ok' => true, 'code' => 200, 'request' => $locked];
+        }
+        if ($locked->base_amount === null) {
+            return ['ok' => false, 'code' => 409, 'message' => 'Harga pengajuan tidak tersedia', 'request' => $locked];
+        }
+
+        $amount = (int) $locked->base_amount;
+        $reference = 'KTA-'.$locked->id;
+        if ($amount === 0) {
+            $free = DB::transaction(function () use ($locked, $reference) {
+                $request = KtaPrintRequest::whereKey($locked->id)->lockForUpdate()->firstOrFail();
+                if ($request->payment_status === 'paid') {
+                    return $request;
+                }
+
+                $old = $request->status;
+                $request->forceFill([
+                    'status' => KtaPrintStatus::MENUNGGU_CETAK->value,
+                    'payment_provider' => 'none',
+                    'payment_reference' => $reference,
+                    'gateway_fee' => 0,
+                    'payment_amount' => 0,
+                    'payment_status' => 'paid',
+                    'paid_at' => now(),
+                ])->save();
+                $this->log($request, $old, KtaPrintStatus::MENUNGGU_CETAK->value, null, 'Harga KTA Rp0', 'system');
+
+                return $request->fresh();
+            });
+
+            return ['ok' => true, 'code' => 200, 'request' => $free];
+        }
+
+        $payload = [
+            'channel_code' => (string) config('kta.print.channel_code', 'qris'),
+            'amount' => $amount,
+            'reference_id' => $reference,
+            'customer_name' => (string) $user->name,
+            'customer_email' => (string) ($user->email ?: 'anggota@maziltutholiban.org'),
+            'return_url' => (string) config('kta.print.return_url', '/cek-kta'),
+        ];
+        $dataUser = \App\Models\DataUser::where('id_users', $user->id)->first(['no_hp']);
+        if ($dataUser && trim((string) $dataUser->no_hp) !== '') {
+            $payload['customer_phone'] = (string) $dataUser->no_hp;
+        }
+
+        $response = $this->paymenku->createTransaction($payload, $reference);
+        if (! $response['ok']) {
+            return ['ok' => false, 'code' => $response['code'], 'message' => $response['message'], 'request' => $locked->fresh()];
+        }
+
+        $gateway = $response['data'];
+        $trxId = (string) ($gateway['trx_id'] ?? '');
+        if ($trxId === '') {
+            return ['ok' => false, 'code' => 502, 'message' => 'Gateway tidak mengembalikan trx_id', 'request' => $locked->fresh()];
+        }
+
+        $totalInCents = $this->amountInCents($gateway['amount'] ?? null);
+        if ($totalInCents === null || $totalInCents < $amount * 100) {
+            return ['ok' => false, 'code' => 502, 'message' => 'Nominal gateway tidak valid', 'request' => $locked->fresh()];
+        }
+        $total = $totalInCents / 100;
+
+        return [
+            'ok' => true,
+            'code' => 200,
+            'request' => $this->attachPayment(
+                $locked,
+                $reference,
+                $trxId,
+                $total,
+                isset($gateway['pay_url']) ? (string) $gateway['pay_url'] : null,
+                $payload['channel_code'],
+            ),
+        ];
     }
 
     /**
@@ -203,12 +298,16 @@ class KtaPrintRequestService
         $locked = KtaPrintRequest::where('id', $request->id)->lockForUpdate()->firstOrFail();
 
         if ($status === 'paid') {
-            $expected = (float) ($locked->payment_amount ?? 0);
-            $received = isset($payload['amount']) ? (float) $payload['amount'] : 0.0;
-            if ($expected > 0 && $received + 0.01 < $expected) {
+            $expected = $this->amountInCents($locked->payment_amount);
+            $received = $this->amountInCents($payload['amount'] ?? null);
+            $receivedReference = isset($payload['reference_id']) ? (string) $payload['reference_id'] : '';
+            $receivedTrxId = isset($payload['trx_id']) ? (string) $payload['trx_id'] : '';
+            $referenceMatches = $receivedReference !== '' && hash_equals((string) $locked->payment_reference, $receivedReference);
+            $trxMatches = $receivedTrxId !== '' && hash_equals((string) $locked->payment_trx_id, $receivedTrxId);
+            if (! $referenceMatches || ! $trxMatches || $expected === null || $received !== $expected) {
                 $event->forceFill(['processed_at' => now()])->save();
 
-                return ['ok' => false, 'code' => 422, 'message' => 'Nominal pembayaran tidak cocok'];
+                return ['ok' => false, 'code' => 422, 'message' => 'Data pembayaran tidak cocok'];
             }
         }
 
@@ -236,10 +335,37 @@ class KtaPrintRequestService
         if (! $request) {
             return false;
         }
-        $expected = (float) ($request->payment_amount ?? 0);
-        $received = isset($payload['amount']) ? (float) $payload['amount'] : 0.0;
+        $expected = $this->amountInCents($request->payment_amount);
+        $received = $this->amountInCents($payload['amount'] ?? null);
 
-        return $expected > 0 && $received + 0.01 >= $expected;
+        return $expected !== null && $received === $expected;
+    }
+
+    protected function amountInCents($amount): ?int
+    {
+        if (is_int($amount)) {
+            return $amount >= 0 && $amount <= 9999999999 ? $amount * 100 : null;
+        }
+        if (is_float($amount)) {
+            $scaled = $amount * 100;
+            if (! is_finite($scaled) || $amount < 0 || $amount > 9999999999 || abs($scaled - round($scaled)) > 0.000001) {
+                return null;
+            }
+
+            return (int) round($scaled);
+        }
+        if (! is_string($amount)) {
+            return null;
+        }
+
+        $amount = trim($amount);
+        if (! preg_match('/^\d{1,10}(?:\.\d{1,2})?$/', $amount)) {
+            return null;
+        }
+
+        [$whole, $fraction] = array_pad(explode('.', $amount, 2), 2, '');
+
+        return ((int) $whole * 100) + (int) str_pad($fraction, 2, '0');
     }
 
     /**
@@ -250,7 +376,7 @@ class KtaPrintRequestService
      */
     public function transition(User $actor, KtaPrintRequest $request, string $target, ?string $reason): array
     {
-        if (! KtaPrintStateMachine::canTransition($request->status, $target)) {
+        if (! $this->canTransition($request, $target)) {
             return ['ok' => false, 'code' => 422, 'message' => 'Perubahan status tidak valid'];
         }
         if (in_array($target, KtaPrintStateMachine::adminForbiddenTargets(), true)) {
@@ -259,11 +385,16 @@ class KtaPrintRequestService
         if ($target === KtaPrintStatus::DITOLAK->value && trim((string) $reason) === '') {
             return ['ok' => false, 'code' => 422, 'message' => 'Alasan penolakan wajib diisi'];
         }
-        // Pickup/delivery branching must match the chosen delivery method.
-        if ($target === KtaPrintStatus::SIAP_DIAMBIL->value && $request->delivery_method !== 'pickup') {
+        if (! $request->isLegacyWorkflow() && in_array($target, [
+            KtaPrintStatus::SIAP_DIAMBIL->value,
+            KtaPrintStatus::DIKIRIM->value,
+        ], true)) {
+            return ['ok' => false, 'code' => 422, 'message' => 'Status logistik hanya tersedia untuk data lama'];
+        }
+        if ($request->isLegacyWorkflow() && $target === KtaPrintStatus::SIAP_DIAMBIL->value && $request->delivery_method !== 'pickup') {
             return ['ok' => false, 'code' => 422, 'message' => 'Request ini menggunakan metode kirim'];
         }
-        if ($target === KtaPrintStatus::DIKIRIM->value && $request->delivery_method !== 'delivery') {
+        if ($request->isLegacyWorkflow() && $target === KtaPrintStatus::DIKIRIM->value && $request->delivery_method !== 'delivery') {
             return ['ok' => false, 'code' => 422, 'message' => 'Request ini menggunakan metode ambil'];
         }
 
@@ -271,7 +402,7 @@ class KtaPrintRequestService
             $locked = KtaPrintRequest::where('id', $request->id)->lockForUpdate()->first();
             $old = $locked->status;
 
-            if (! KtaPrintStateMachine::canTransition($old, $target)) {
+            if (! $this->canTransition($locked, $target)) {
                 return null;
             }
 
@@ -301,6 +432,18 @@ class KtaPrintRequestService
         }
 
         return ['ok' => true, 'code' => 200, 'message' => 'Status diperbarui', 'request' => $updated];
+    }
+
+    protected function canTransition(KtaPrintRequest $request, string $target): bool
+    {
+        if ($request->isLegacyWorkflow() && $request->status === KtaPrintStatus::SUDAH_DICETAK->value) {
+            return in_array($target, [
+                KtaPrintStatus::SIAP_DIAMBIL->value,
+                KtaPrintStatus::DIKIRIM->value,
+            ], true);
+        }
+
+        return KtaPrintStateMachine::canTransition($request->status, $target);
     }
 
     protected function recordLatePaidAfterExpiry(KtaPrintRequest $request, array $payload): void
@@ -395,6 +538,7 @@ class KtaPrintRequestService
 
     protected function isUniqueViolation(QueryException $e): bool
     {
-        return (int) ($e->errorInfo[1] ?? 0) === 1062;
+        return in_array((string) $e->getCode(), ['19', '1062', '23000', '23505'], true)
+            || in_array((int) ($e->errorInfo[1] ?? 0), [19, 1062], true);
     }
 }

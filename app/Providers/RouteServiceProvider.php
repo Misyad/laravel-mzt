@@ -65,5 +65,41 @@ class RouteServiceProvider extends ServiceProvider
         RateLimiter::for('kta-print-request', function (Request $request) {
             return Limit::perMinute((int) config('kta.rate_limit.print_request', 10))->by($request->ip());
         });
+
+        RateLimiter::for('member-activation-check', function (Request $request) {
+            return Limit::perMinute((int) config('member_onboarding.rate_limit.activation_check', 5))->by($request->ip());
+        });
+
+        RateLimiter::for('member-activation-verify', function (Request $request) {
+            return Limit::perMinute((int) config('member_onboarding.rate_limit.activation_verify', 10))->by($request->ip());
+        });
+
+        RateLimiter::for('member-account-setup', function (Request $request) {
+            return Limit::perMinute((int) config('member_onboarding.rate_limit.setup', 6))->by(($request->user()?->id ?: 'guest').'|'.$request->ip());
+        });
+
+        RateLimiter::for('member-password-forgot', function (Request $request) {
+            return Limit::perMinute((int) config('member_onboarding.rate_limit.password_forgot', 5))->by($request->ip());
+        });
+
+        RateLimiter::for('member-password-reset', function (Request $request) {
+            return Limit::perMinute((int) config('member_onboarding.rate_limit.password_reset', 8))->by($request->ip());
+        });
+
+        RateLimiter::for('member-applications', function (Request $request) {
+            return Limit::perHour((int) config('member_onboarding.rate_limit.application', 5))->by($request->ip());
+        });
+
+        RateLimiter::for('applicant-login', function (Request $request) {
+            $email = strtolower(trim((string) $request->input('email')));
+
+            return Limit::perMinute((int) config('member_onboarding.rate_limit.applicant_login', 5))->by($email.'|'.$request->ip());
+        });
+
+        RateLimiter::for('applicant-email', function (Request $request) {
+            $applicationId = $request->session()->get('applicant_application_id', 'guest');
+
+            return Limit::perMinute((int) config('member_onboarding.rate_limit.applicant_email', 6))->by($applicationId.'|'.$request->ip());
+        });
     }
 }

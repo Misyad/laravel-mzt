@@ -89,8 +89,10 @@ class TicketService
     {
         $free = ((float) $order->total_amount) <= 0.001;
 
-        if ($free) {
-            return in_array($order->status_registrasi, [OrderStatus::REGISTERED->value, OrderStatus::CONFIRMED->value], true);
+        $registered = in_array($order->status_registrasi, [OrderStatus::REGISTERED->value, OrderStatus::CONFIRMED->value], true);
+
+        if ($free || $order->payment_choice === 'pay_at_venue') {
+            return $registered;
         }
 
         return $order->payment_status === 'paid';

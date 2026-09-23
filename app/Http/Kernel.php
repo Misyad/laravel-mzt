@@ -56,6 +56,8 @@ class Kernel extends HttpKernel
         'auth' => \App\Http\Middleware\Authenticate::class,
         'check-active' => \App\Http\Middleware\CheckActiveAccount::class,
         'password-changed' => \App\Http\Middleware\EnsurePasswordChanged::class,
+        'account-setup-complete' => \App\Http\Middleware\EnsureAccountSetupComplete::class,
+        'auth.applicant' => \App\Http\Middleware\AuthenticateApplicant::class,
         'auth.basic' => \Illuminate\Auth\Middleware\AuthenticateWithBasicAuth::class,
         'auth.session' => \Illuminate\Session\Middleware\AuthenticateSession::class,
         'cache.headers' => \Illuminate\Http\Middleware\SetCacheHeaders::class,

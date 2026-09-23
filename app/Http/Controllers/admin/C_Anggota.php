@@ -3,28 +3,25 @@
 namespace App\Http\Controllers\admin;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
-
-use App\Models\RoleUser;
-use App\Models\User;
 use App\Models\DataUser;
 use App\Models\HakAksesRole;
-use DNS1D;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Facades\File;
-use Illuminate\Support\Facades\Gate;
+use App\Models\RoleUser;
+use App\Models\User;
+use App\Services\MemberIdentityService;
 use App\Support\MemberManagement;
 use App\Support\RoleGuard;
-Use PDF;
-use DataPicker;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Storage;
 use Image;
-
-
-
+use PDF;
 
 class C_Anggota extends Controller
 {
-    function tabelAnggota()
+    public function __construct(private ?MemberIdentityService $identity = null) {}
+
+    public function tabelAnggota()
     {
         Gate::forUser(auth()->user())->authorize('writeMember', MemberManagement::class);
 
@@ -34,10 +31,11 @@ class C_Anggota extends Controller
             ->get();
         $roles_count = $roles->count();
         \DataPicker::activitas_log('membuka tabel anggota');
-        return view('admin.tabel_anggota',['roles' => $roles,'roles_count' => $roles_count ]);
+
+        return view('admin.tabel_anggota', ['roles' => $roles, 'roles_count' => $roles_count]);
     }
 
-    function storeData(Request $request)
+    public function storeData(Request $request)
     {
         Gate::forUser($request->user())->authorize('writeMember', MemberManagement::class);
 
@@ -48,39 +46,40 @@ class C_Anggota extends Controller
         ], 405);
     }
 
-    function getData()
+    public function getData()
     {
         Gate::forUser(auth()->user())->authorize('writeMember', MemberManagement::class);
 
-        $data = User::join('data_users','users.id','=','data_users.id_users')
-            ->select('data_users.*','users.name as nama', 'users.email','users.id_anggota')
-            ->where('data_users.is_active','1')
+        $data = User::join('data_users', 'users.id', '=', 'data_users.id_users')
+            ->select('data_users.*', 'users.name as nama', 'users.email', 'users.id_anggota')
+            ->where('data_users.is_active', '1')
             ->get();
 
-            return response()->json([
-                'success' => true,
-                'message' => 'berhasil ambil data',
-                'data'    => $data ,
-                
-            ],200);
-
-    }
-
-    function getDataHakakses(Request $request)
-    {
-        Gate::forUser($request->user())->authorize('manageAccounts', MemberManagement::class);
-
-       $data = HakAksesRole::where('id_users', $request->id)
-                    ->get();
         return response()->json([
             'success' => true,
             'message' => 'berhasil ambil data',
-            'data'    => $data ,
-            
-        ],200);
+            'data' => $data,
+
+        ], 200);
+
     }
 
-    function editData(Request $request)
+    public function getDataHakakses(Request $request)
+    {
+        Gate::forUser($request->user())->authorize('manageAccounts', MemberManagement::class);
+
+        $data = HakAksesRole::where('id_users', $request->id)
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'berhasil ambil data',
+            'data' => $data,
+
+        ], 200);
+    }
+
+    public function editData(Request $request)
     {
         Gate::forUser($request->user())->authorize('writeMember', MemberManagement::class);
 
@@ -95,10 +94,11 @@ class C_Anggota extends Controller
             'tanggal_lahir' => ['required'],
             'tahun_masuk' => ['required'],
             'tahun_keluar' => ['required'],
+            'email' => ['nullable', 'email', 'max:255'],
             'roles_present' => ['sometimes', 'accepted'],
             'roles' => ['sometimes', 'array'],
             'roles.*' => ['string', 'distinct:strict', 'max:255'],
-            'foto' => ['nullable', 'image','mimes:jpg,png,jpeg,gif,svg','max:1048'],
+            'foto' => ['nullable', 'image', 'mimes:jpg,png,jpeg,gif,svg', 'max:1048'],
             'password' => ['prohibited'],
             'password_confirmation' => ['prohibited'],
         ]);
@@ -109,155 +109,139 @@ class C_Anggota extends Controller
             RoleGuard::validateMemberRoleSelection($submittedRoles);
         }
 
-        
         $id = $request->id_users;
 
-        $data_diri = User::where('id', $id)->first();
-        $prefix = substr($data_diri->id_anggota, 0, 4);
+        $data_diri = User::where('id', $id)->firstOrFail();
         $file_lama = $request->foto_lama;
         $barcode_lama = $request->barcode;
-        $tangal_lahir = date("dm", strtotime($request->tanggal_lahir));
-        $tahun = substr(date("Y", strtotime($request->tanggal_lahir)),-2);
-        $tahun_masuk = substr(date("Y", strtotime($request->tahun_masuk)),-2);
-        $tahun_keluar = substr(date("Y", strtotime($request->tahun_keluar)),-2);
-        $id_anggota = $prefix.$tahun.$tahun_masuk.$tahun_keluar;
+        $id_anggota = $data_diri->id_anggota;
+        if ($request->filled('email')) {
+            $this->memberIdentity()->updateUserEmail($data_diri, $request->email);
+        }
         \DataPicker::activitas_log('edit anggota');
 
-        if($file_status){
-            
-            if(File::exists(public_path('storage/'.$file_lama))){
+        if ($file_status) {
 
-               File::delete(public_path('storage/'.$file_lama));
-               File::delete(public_path('storage/'.$barcode_lama));
+            if (File::exists(public_path('storage/'.$file_lama))) {
 
-               $barcode = \DNS1D::getBarcodePNG($id_anggota, 'C39');
-               $filename = 'barcode-' . $id_anggota . '.png';
-               $image_path_barcode = 'image/barcode/'.$filename;
-               Storage::disk('public')->put('image/barcode/' . $filename, base64_decode($barcode));
+                File::delete(public_path('storage/'.$file_lama));
+                File::delete(public_path('storage/'.$barcode_lama));
 
-               $image_path = $request->file('foto')->store('image/anggota', 'public');
-               $image = Image::make(storage_path('app/public/' . $image_path));
-               $image->resize(300, 400); // Mengubah ukuran gambar
-               $image->save();
+                $barcode = \DNS1D::getBarcodePNG($id_anggota, 'C39');
+                $filename = 'barcode-'.$id_anggota.'.png';
+                $image_path_barcode = 'image/barcode/'.$filename;
+                Storage::disk('public')->put('image/barcode/'.$filename, base64_decode($barcode));
 
+                $image_path = $request->file('foto')->store('image/anggota', 'public');
+                $image = Image::make(storage_path('app/public/'.$image_path));
+                $image->resize(300, 400); // Mengubah ukuran gambar
+                $image->save();
 
-               User::where('id', $id)->update([
-                    'id_anggota' => $id_anggota,
-                    'name' => $request->nama,
-                    'email' => $request->email,
-               ]);
-      
+                $data_diri->forceFill(['name' => $request->nama])->save();
 
-               DataUser::where('id_users', $id)->update([
+                DataUser::where('id_users', $id)->update([
                     'barcode' => $image_path_barcode,
                     'alamat' => $request->alamat,
                     'niqobah' => $request->niqobah,
                     'no_hp' => $request->no_hp,
                     'pekerjaan' => $request->pekerjaan,
                     'tempat_lahir' => $request->tempat_lahir,
-                    'tanggal_lahir' => date("Y-m-d", strtotime($request->tanggal_lahir)),
-                    'tahun_masuk' => date("Y-m-d", strtotime($request->tahun_masuk)),
-                    'tahun_keluar' => date("Y-m-d", strtotime($request->tahun_keluar)),
+                    'tanggal_lahir' => date('Y-m-d', strtotime($request->tanggal_lahir)),
+                    'tahun_masuk' => date('Y-m-d', strtotime($request->tahun_masuk)),
+                    'tahun_keluar' => date('Y-m-d', strtotime($request->tahun_keluar)),
                     'foto' => $image_path,
-               ]);
+                ]);
 
-               if ($submittedRoles !== null) {
-                   RoleGuard::replaceMemberRoles($data_diri, $submittedRoles);
-               }
-          
+                if ($submittedRoles !== null) {
+                    RoleGuard::replaceMemberRoles($data_diri, $submittedRoles, $request->user());
+                }
 
                 return response()->json([
                     'success' => true,
                     'message' => 'berhasil input data 1',
-                    'data'    => 'succes' 
-                ],200);
+                    'data' => 'succes',
+                ], 200);
 
-            }else{
+            } else {
                 File::delete(public_path('storage/'.$barcode_lama));
 
                 $barcode = \DNS1D::getBarcodePNG($id_anggota, 'C39');
-                $filename = 'barcode-' . $id_anggota . '.png';
+                $filename = 'barcode-'.$id_anggota.'.png';
                 $image_path_barcode = 'image/barcode/'.$filename;
-                Storage::disk('public')->put('image/barcode/' . $filename, base64_decode($barcode));
- 
+                Storage::disk('public')->put('image/barcode/'.$filename, base64_decode($barcode));
+
                 $image_path = $request->file('foto')->store('image/anggota', 'public');
-                $image = Image::make(storage_path('app/public/' . $image_path));
+                $image = Image::make(storage_path('app/public/'.$image_path));
                 $image->resize(300, 400); // Mengubah ukuran gambar
                 $image->save();
- 
- 
-                User::where('id', $id)->update([
-                     'id_anggota' => $id_anggota,
-                     'name' => $request->nama,
-                     'email' => $request->email,
-                ]);
-       
- 
+
+                $data_diri->forceFill(['name' => $request->nama])->save();
+
                 DataUser::where('id_users', $id)->update([
-                     'barcode' => $image_path_barcode,
-                     'alamat' => $request->alamat,
-                     'niqobah' => $request->niqobah,
-                     'no_hp' => $request->no_hp,
-                     'pekerjaan' => $request->pekerjaan,
-                     'tempat_lahir' => $request->tempat_lahir,
-                     'tanggal_lahir' => date("Y-m-d", strtotime($request->tanggal_lahir)),
-                     'tahun_masuk' => date("Y-m-d", strtotime($request->tahun_masuk)),
-                     'tahun_keluar' => date("Y-m-d", strtotime($request->tahun_keluar)),
-                     'foto' => $image_path,
+                    'barcode' => $image_path_barcode,
+                    'alamat' => $request->alamat,
+                    'niqobah' => $request->niqobah,
+                    'no_hp' => $request->no_hp,
+                    'pekerjaan' => $request->pekerjaan,
+                    'tempat_lahir' => $request->tempat_lahir,
+                    'tanggal_lahir' => date('Y-m-d', strtotime($request->tanggal_lahir)),
+                    'tahun_masuk' => date('Y-m-d', strtotime($request->tahun_masuk)),
+                    'tahun_keluar' => date('Y-m-d', strtotime($request->tahun_keluar)),
+                    'foto' => $image_path,
                 ]);
- 
+
                 if ($submittedRoles !== null) {
-                    RoleGuard::replaceMemberRoles($data_diri, $submittedRoles);
+                    RoleGuard::replaceMemberRoles($data_diri, $submittedRoles, $request->user());
                 }
-           
- 
-                 return response()->json([
-                     'success' => true,
-                     'message' => 'berhasil input data 1',
-                     'data'    => 'succes' 
-                 ],200);
+
+                return response()->json([
+                    'success' => true,
+                    'message' => 'berhasil input data 1',
+                    'data' => 'succes',
+                ], 200);
             }
 
-        }else{
+        } else {
 
             File::delete(public_path('storage/'.$barcode_lama));
-            
-            $barcode = \DNS1D::getBarcodePNG($id_anggota, 'C39');
-            $filename = 'barcode-' . $id_anggota . '.png';
-            $image_path_barcode = 'image/barcode/'.$filename;
-            Storage::disk('public')->put('image/barcode/' . $filename, base64_decode($barcode));
 
-            User::where('id', $id)->update([
-                'id_anggota' => $id_anggota,
-                'name' => $request->nama,
-                'email' => $request->email,
+            $barcode = \DNS1D::getBarcodePNG($id_anggota, 'C39');
+            $filename = 'barcode-'.$id_anggota.'.png';
+            $image_path_barcode = 'image/barcode/'.$filename;
+            Storage::disk('public')->put('image/barcode/'.$filename, base64_decode($barcode));
+
+            $data_diri->forceFill(['name' => $request->nama])->save();
+
+            DataUser::where('id_users', $id)->update([
+                'barcode' => $image_path_barcode,
+                'alamat' => $request->alamat,
+                'niqobah' => $request->niqobah,
+                'no_hp' => $request->no_hp,
+                'pekerjaan' => $request->pekerjaan,
+                'tempat_lahir' => $request->tempat_lahir,
+                'tanggal_lahir' => date('Y-m-d', strtotime($request->tanggal_lahir)),
+                'tahun_masuk' => date('Y-m-d', strtotime($request->tahun_masuk)),
+                'tahun_keluar' => date('Y-m-d', strtotime($request->tahun_keluar)),
             ]);
 
-        DataUser::where('id_users', $id)->update([
-            'barcode' => $image_path_barcode,
-            'alamat' => $request->alamat,
-            'niqobah' => $request->niqobah,
-            'no_hp' => $request->no_hp,
-            'pekerjaan' => $request->pekerjaan,
-            'tempat_lahir' => $request->tempat_lahir,
-            'tanggal_lahir' => date("Y-m-d", strtotime($request->tanggal_lahir)),
-            'tahun_masuk' => date("Y-m-d", strtotime($request->tahun_masuk)),
-            'tahun_keluar' => date("Y-m-d", strtotime($request->tahun_keluar)),
-       ]);
-
             if ($submittedRoles !== null) {
-                RoleGuard::replaceMemberRoles($data_diri, $submittedRoles);
+                RoleGuard::replaceMemberRoles($data_diri, $submittedRoles, $request->user());
             }
 
             return response()->json([
                 'success' => true,
                 'message' => 'berhasil input data 2',
-                'data'    => 'succes' 
-            ],200);
+                'data' => 'succes',
+            ], 200);
         }
     }
 
-    function deleteData(Request $request)
+    private function memberIdentity(): MemberIdentityService
+    {
+        return $this->identity ??= app(MemberIdentityService::class);
+    }
+
+    public function deleteData(Request $request)
     {
         Gate::forUser($request->user())->authorize('writeMember', MemberManagement::class);
 
@@ -268,7 +252,7 @@ class C_Anggota extends Controller
         ], 405);
     }
 
-    function exportPdf(Request $request, $id)
+    public function exportPdf(Request $request, $id)
     {
         Gate::forUser($request->user())->authorize('viewCards', MemberManagement::class);
 
@@ -279,15 +263,13 @@ class C_Anggota extends Controller
             ->whereHas('user', fn ($query) => $query->where('is_active', '1'))
             ->first();
         $data2 = $data?->user;
-        
-        if (!$data || !$data2) {
+
+        if (! $data || ! $data2) {
             return abort(404, 'Data anggota tidak ditemukan');
         }
 
-        
         $images = $data->barcode;
         $nama = $data2->name;
-
 
         // Mendapatkan path file
         // $filePath = public_path('/storage/'. $images);
@@ -295,9 +277,9 @@ class C_Anggota extends Controller
         // $imageData = base64_encode($image);
 
         // Mendapatkan path file
-        $filePath2 = '/storage/'. $data->foto;
-        $cek = public_path('storage/'. $data->foto);
-        if(empty($data->foto) || !File::exists($cek)){
+        $filePath2 = '/storage/'.$data->foto;
+        $cek = public_path('storage/'.$data->foto);
+        if (empty($data->foto) || ! File::exists($cek)) {
             $filePath2 = '/assets/avatar-1.png';
         }
 
@@ -307,23 +289,19 @@ class C_Anggota extends Controller
         // $imageData2 = base64_encode($image2);
         // $imageData3 = base64_encode($image3);
 
-
-
-
         // print_r($backgournd_css);
         // die;
 
         $data = [
-            'nama' => $nama, 
-            'id_anggota' => $data2->id_anggota, 
-            'alamat' => $data->alamat, 
-            'niqobah' => $data->niqobah, 
-            'tahun_masuk' => date('Y', strtotime( $data->tahun_masuk)), 
-            'tahun_keluar' => date('Y', strtotime( $data->tahun_keluar)), 
-            'bracode' => $data->barcode, 
-            'profil' => $filePath2, 
+            'nama' => $nama,
+            'id_anggota' => $data2->id_anggota,
+            'alamat' => $data->alamat,
+            'niqobah' => $data->niqobah,
+            'tahun_masuk' => date('Y', strtotime($data->tahun_masuk)),
+            'tahun_keluar' => date('Y', strtotime($data->tahun_keluar)),
+            'bracode' => $data->barcode,
+            'profil' => $filePath2,
         ];
-          
 
         return view('kta', $data);
         // $pdf = PDF::loadView('kta', $data)-> setPaper ( [ 0 , 0 , 360 , 225 ] , 'portrait' );
@@ -334,5 +312,3 @@ class C_Anggota extends Controller
 
     }
 }
-
-

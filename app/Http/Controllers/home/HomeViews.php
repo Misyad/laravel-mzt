@@ -181,7 +181,6 @@ class HomeViews extends Controller
 
             $status = User::where('id', $data_user->id_users)->update([
                 'name' => $request->nama,
-                'email' => $request->email,
             ]);
 
             if($file_status){

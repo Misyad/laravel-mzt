@@ -31,7 +31,10 @@ class AccountSecurityTest extends TestCase
         }
 
         $this->truncate([
+            'member_role_logs',
             'activitas_logs',
+            'applicant_sessions',
+            'member_applications',
             'sessions',
             'personal_access_tokens',
             'hak_akses_role',
@@ -53,7 +56,10 @@ class AccountSecurityTest extends TestCase
 
     private function buildSchema(): void
     {
+        Schema::dropIfExists('member_role_logs');
         Schema::dropIfExists('activitas_logs');
+        Schema::dropIfExists('applicant_sessions');
+        Schema::dropIfExists('member_applications');
         Schema::dropIfExists('sessions');
         Schema::dropIfExists('personal_access_tokens');
         Schema::dropIfExists('hak_akses_role');
@@ -73,6 +79,8 @@ class AccountSecurityTest extends TestCase
             $table->timestamp('last_login')->nullable();
             $table->unsignedInteger('login_count')->default(0);
             $table->timestamp('password_changed_at')->nullable();
+            $table->boolean('account_setup_required')->default(false);
+            $table->timestamp('account_claimed_at')->nullable();
             $table->timestamps();
         });
 
@@ -128,6 +136,18 @@ class AccountSecurityTest extends TestCase
             $table->integer('last_activity')->index();
         });
 
+        Schema::create('member_applications', function ($table) {
+            $table->id();
+            $table->unsignedBigInteger('approved_user_id')->nullable();
+        });
+
+        Schema::create('applicant_sessions', function ($table) {
+            $table->string('session_id')->primary();
+            $table->unsignedBigInteger('member_application_id');
+            $table->timestamp('created_at')->nullable();
+            $table->timestamp('last_seen_at')->nullable();
+        });
+
         Schema::create('activitas_logs', function ($table) {
             $table->id();
             $table->string('subject');
@@ -137,15 +157,24 @@ class AccountSecurityTest extends TestCase
             $table->string('user_id')->nullable();
             $table->timestamps();
         });
+
+        Schema::create('member_role_logs', function ($table) {
+            $table->id();
+            $table->unsignedBigInteger('member_user_id');
+            $table->unsignedBigInteger('actor_user_id')->nullable();
+            $table->json('old_roles');
+            $table->json('new_roles');
+            $table->json('added_roles');
+            $table->json('removed_roles');
+            $table->timestamp('created_at')->nullable();
+        });
     }
 
     private function truncate(array $tables): void
     {
-        DB::statement('SET FOREIGN_KEY_CHECKS=0');
         foreach ($tables as $table) {
-            DB::table($table)->truncate();
+            DB::table($table)->delete();
         }
-        DB::statement('SET FOREIGN_KEY_CHECKS=1');
     }
 
     private function makeUser(string $role, array $attributes = []): User
@@ -199,6 +228,19 @@ class AccountSecurityTest extends TestCase
             'user_agent' => 'test',
             'payload' => base64_encode(serialize([])),
             'last_activity' => time(),
+        ]);
+    }
+
+    private function makeApplicantSession(User $user, string $id): void
+    {
+        $applicationId = DB::table('member_applications')->insertGetId([
+            'approved_user_id' => $user->id,
+        ]);
+        DB::table('applicant_sessions')->insert([
+            'session_id' => $id,
+            'member_application_id' => $applicationId,
+            'created_at' => now(),
+            'last_seen_at' => now(),
         ]);
     }
 
@@ -277,6 +319,35 @@ class AccountSecurityTest extends TestCase
         $this->assertFalse(RoleGuard::isAdmin($user));
     }
 
+    public function test_role_updates_preserve_required_roles_and_write_actor_audit(): void
+    {
+        $admin = $this->makeUser('admin');
+        $target = $this->makeEligibleMember();
+        Sanctum::actingAs($admin);
+
+        $this->putJson("/api/members/{$target->id}/roles", [
+            'roles' => ['finance'],
+        ])->assertSuccessful()
+            ->assertJsonPath('data.required_roles', ['anggota', 'profil'])
+            ->assertJsonPath('data.assigned_roles', ['anggota', 'finance', 'profil']);
+
+        $firstLog = DB::table('member_role_logs')->where('member_user_id', $target->id)->first();
+        $this->assertSame($admin->id, (int) $firstLog->actor_user_id);
+        $this->assertSame(['anggota', 'profil'], json_decode($firstLog->old_roles, true));
+        $this->assertSame(['anggota', 'finance', 'profil'], json_decode($firstLog->new_roles, true));
+        $this->assertSame(['finance'], json_decode($firstLog->added_roles, true));
+        $this->assertSame([], json_decode($firstLog->removed_roles, true));
+
+        $this->putJson("/api/members/{$target->id}/roles", [
+            'roles' => [],
+        ])->assertSuccessful()
+            ->assertJsonPath('data.assigned_roles', ['anggota', 'profil']);
+
+        $secondLog = DB::table('member_role_logs')->where('member_user_id', $target->id)->latest('id')->first();
+        $this->assertSame(['finance'], json_decode($secondLog->removed_roles, true));
+        $this->assertSame(2, DB::table('member_role_logs')->where('member_user_id', $target->id)->count());
+    }
+
     public function test_reset_audit_reports_strict_eligibility_and_role_exclusions(): void
     {
         $admin = $this->makeUser('admin');
@@ -319,6 +390,7 @@ class AccountSecurityTest extends TestCase
         $target->createToken('two');
         $this->makeSession($target, 'target-session-one');
         $this->makeSession($target, 'target-session-two');
+        $this->makeApplicantSession($target, 'target-applicant-session');
 
         Sanctum::actingAs($admin);
 
@@ -326,23 +398,26 @@ class AccountSecurityTest extends TestCase
             'confirm' => true,
             'confirmation_id_anggota' => $target->id_anggota,
         ])->assertSuccessful()
-            ->assertJsonPath('data.temporary_password', 'mzt1234')
             ->assertJsonPath('data.must_change_password', true)
+            ->assertJsonMissingPath('data.temporary_password')
             ->assertJsonMissingPath('password');
 
         $fresh = $target->fresh();
-        $this->assertTrue(Hash::check('mzt1234', $fresh->password));
+        $this->assertTrue(Hash::check('mzt12345', $fresh->password));
         $this->assertNull($fresh->password_changed_at);
+        $this->assertTrue($fresh->account_setup_required);
+        $this->assertNull($fresh->account_claimed_at);
         $this->assertSame('1', (string) $fresh->is_active);
         $this->assertSame($target->id_anggota, $fresh->id_anggota);
         $this->assertNotSame('old-token', $fresh->remember_token);
         $this->assertSame(0, $target->tokens()->count());
         $this->assertSame(0, DB::table('sessions')->where('user_id', $target->id)->count());
+        $this->assertSame(0, DB::table('applicant_sessions')->count());
         $this->assertSame($profile->id, DB::table('data_users')->where('id_users', $target->id)->value('id'));
         $this->assertSame('1', (string) DB::table('data_users')->where('id_users', $target->id)->value('is_active'));
 
         $log = DB::table('activitas_logs')->latest('id')->first();
-        $this->assertStringNotContainsString('mzt1234', $log->subject);
+        $this->assertStringNotContainsString('mzt12345', $log->subject);
         $this->assertStringNotContainsString($fresh->password, $log->subject);
     }
 
@@ -421,6 +496,8 @@ class AccountSecurityTest extends TestCase
         $this->makeSession($target, 'target-session-one');
         $this->makeSession($target, 'target-session-two');
         $this->makeSession($bystander, 'bystander-session');
+        $this->makeApplicantSession($target, 'target-applicant-session');
+        $this->makeApplicantSession($bystander, 'bystander-applicant-session');
 
         Sanctum::actingAs($admin);
 
@@ -433,8 +510,10 @@ class AccountSecurityTest extends TestCase
         $this->assertNotSame('old-remember-token', $fresh->remember_token);
         $this->assertSame(0, $target->tokens()->count());
         $this->assertSame(0, DB::table('sessions')->where('user_id', $target->id)->count());
+        $this->assertDatabaseMissing('applicant_sessions', ['session_id' => 'target-applicant-session']);
         $this->assertSame(1, $bystander->tokens()->count());
         $this->assertSame(1, DB::table('sessions')->where('user_id', $bystander->id)->count());
+        $this->assertDatabaseHas('applicant_sessions', ['session_id' => 'bystander-applicant-session']);
 
         $rotatedRememberToken = $fresh->remember_token;
         $this->putJson("/api/members/{$target->id}/status", ['is_active' => '1'])
@@ -703,13 +782,14 @@ class AccountSecurityTest extends TestCase
         $user->createToken('two');
         $this->makeSession($user, 'session-one');
         $this->makeSession($user, 'session-two');
+        $this->makeApplicantSession($user, 'applicant-session');
 
         Sanctum::actingAs($user);
 
         $this->putJson('/api/password', [
             'current_password' => 'CurrentPassword1',
-            'password' => 'mzt1234',
-            'password_confirmation' => 'mzt1234',
+            'password' => 'mzt12345',
+            'password_confirmation' => 'mzt12345',
         ])->assertStatus(422);
 
         $this->putJson('/api/password', [
@@ -737,5 +817,6 @@ class AccountSecurityTest extends TestCase
         $this->assertNotSame('old-token', $fresh->remember_token);
         $this->assertSame(0, $user->tokens()->count());
         $this->assertSame(0, DB::table('sessions')->where('user_id', $user->id)->count());
+        $this->assertSame(0, DB::table('applicant_sessions')->count());
     }
 }

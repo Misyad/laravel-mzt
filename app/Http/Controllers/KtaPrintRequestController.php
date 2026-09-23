@@ -32,14 +32,12 @@ class KtaPrintRequestController extends Controller
 
         $request->validate([
             'status' => ['nullable', 'string', Rule::in(KtaPrintStatus::values())],
-            'delivery_method' => ['nullable', 'string', Rule::in(['pickup', 'delivery'])],
             'q' => ['nullable', 'string', 'max:100'],
             'page' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:50'],
         ]);
 
         $status = $request->input('status');
-        $method = $request->input('delivery_method');
         $q = trim((string) $request->input('q', ''));
         $perPage = max(1, min(50, (int) $request->input('per_page', 15)));
 
@@ -52,8 +50,7 @@ class KtaPrintRequestController extends Controller
             $query->productionQueue();
         }
 
-        $query->when($method, fn ($qq) => $qq->where('delivery_method', $method))
-            ->when($q !== '', function ($qq) use ($q) {
+        $query->when($q !== '', function ($qq) use ($q) {
                 $qq->where(function ($w) use ($q) {
                     $w->where('id_anggota_snapshot', 'like', "%{$q}%")
                         ->orWhere('payment_reference', 'like', "%{$q}%")
@@ -94,9 +91,9 @@ class KtaPrintRequestController extends Controller
             'success' => true,
             'data' => [
                 'request' => array_merge($this->adminRow($req), [
-                    'recipient_name' => $req->recipient_name,
-                    'recipient_phone' => $req->recipient_phone,
-                    'shipping_address' => $req->shipping_address,
+                    'recipient_name' => $req->isLegacyWorkflow() ? $req->recipient_name : null,
+                    'recipient_phone' => $req->isLegacyWorkflow() ? $req->recipient_phone : null,
+                    'shipping_address' => $req->isLegacyWorkflow() ? $req->shipping_address : null,
                     'notes' => $req->notes,
                     'logs' => $req->logs->map(fn ($l) => [
                         'old_status' => $l->old_status,
@@ -160,7 +157,9 @@ class KtaPrintRequestController extends Controller
             'nama_masked' => $masked,
             'id_anggota_masked' => $idAnggota === '' ? '' : 'MZT***' . mb_substr($idAnggota, -3),
             'status' => $r->status,
-            'delivery_method' => $r->delivery_method,
+            'delivery_method' => $r->isLegacyWorkflow() ? $r->delivery_method : null,
+            'base_amount' => $r->base_amount,
+            'gateway_fee' => $r->gateway_fee,
             'payment_status' => $r->payment_status,
             'payment_amount' => $r->payment_amount,
             'submitted_at' => optional($r->submitted_at)->toIso8601String(),

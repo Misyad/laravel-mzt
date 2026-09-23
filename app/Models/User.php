@@ -25,6 +25,9 @@ class User extends Authenticatable
         'is_active',
         'last_login',
         'password_changed_at',
+        'account_setup_required',
+        'account_claimed_at',
+        'email_verified_at',
         'login_count',
     ];
 
@@ -47,6 +50,8 @@ class User extends Authenticatable
         'email_verified_at' => 'datetime',
         'last_login' => 'datetime',
         'password_changed_at' => 'datetime',
+        'account_setup_required' => 'boolean',
+        'account_claimed_at' => 'datetime',
         'login_count' => 'integer',
     ];
 }

@@ -167,15 +167,57 @@ class RegistrationConcurrencyTest extends TestCase
         $this->assertTrue($r2['ok'], 'cancelled order should free quota');
     }
 
+    public function test_paid_pay_at_venue_registration_issues_ticket_immediately(): void
+    {
+        $event = $this->makeEvent(10);
+        $event->update(['harga_amount' => 100000]);
+        $user = $this->makeUser('VENUE001');
+
+        $result = app(RegistrationService::class)->register($user, $event->id, 'pay_at_venue');
+
+        $this->assertTrue($result['ok']);
+        $this->assertSame('pay_at_venue', $result['order']->payment_choice);
+        $this->assertSame('pending', $result['order']->payment_status);
+        $this->assertNotNull($result['ticket']);
+        $this->assertSame($result['order']->id, $result['ticket']->id_order);
+    }
+
+    public function test_http_registration_requires_valid_payment_choice(): void
+    {
+        $event = $this->makeEvent(10);
+        $user = $this->makeUser('CHOICE001');
+        Sanctum::actingAs($user);
+
+        $this->postJson("/api/events/{$event->id}/register", [])->assertStatus(422);
+        $this->postJson("/api/events/{$event->id}/register", ['payment_choice' => 'later'])->assertStatus(422);
+    }
+
+    public function test_http_pay_at_venue_registration_returns_order_and_creates_ticket(): void
+    {
+        $event = $this->makeEvent(10);
+        $event->update(['harga_amount' => 100000]);
+        $user = $this->makeUser('VENUEHTTP001');
+        Sanctum::actingAs($user);
+
+        $response = $this->postJson("/api/events/{$event->id}/register", [
+            'payment_choice' => 'pay_at_venue',
+        ])->assertStatus(201)
+            ->assertJsonPath('data.payment_choice', 'pay_at_venue')
+            ->assertJsonPath('data.payment_status', 'pending');
+
+        $order = Order::where('uuid', $response->json('data.uuid'))->firstOrFail();
+        $this->assertSame(1, $order->tickets()->count());
+    }
+
     public function test_http_concurrent_via_api_quota_one(): void
     {
         $event=$this->makeEvent(1);
         $u1=$this->makeUser('H001'); $u2=$this->makeUser('H002');
         // HTTP path also goes through same service.
         Sanctum::actingAs($u1);
-        $this->postJson("/api/events/{$event->id}/register")->assertStatus(201);
+        $this->postJson("/api/events/{$event->id}/register", ['payment_choice' => 'pay_now'])->assertStatus(201);
         Sanctum::actingAs($u2);
-        $this->postJson("/api/events/{$event->id}/register")->assertStatus(409);
+        $this->postJson("/api/events/{$event->id}/register", ['payment_choice' => 'pay_now'])->assertStatus(409);
         $this->assertEquals(1, Order::where('id_event',$event->id)->count());
     }
 }

@@ -16,7 +16,14 @@ use App\Http\Controllers\Public\KtaPrintRequestController as PublicKtaPrintReque
 use App\Http\Controllers\Public\PaymenkuWebhookController;
 use App\Http\Controllers\KtaPrintRequestController as AdminKtaPrintRequestController;
 use App\Http\Controllers\KtaCardController;
+use App\Http\Controllers\KtaPriceSettingController;
+use App\Http\Controllers\AccountSetupController;
+use App\Http\Controllers\ApplicantAuthController;
+use App\Http\Controllers\MemberApplicationAdminController;
 use App\Http\Controllers\OwnKtaPrintRequestController;
+use App\Http\Controllers\Public\AccountActivationController;
+use App\Http\Controllers\Public\MemberApplicationController;
+use App\Http\Controllers\Public\PasswordResetController;
 use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 
 /*
@@ -39,6 +46,23 @@ Route::withoutMiddleware(EnsureFrontendRequestsAreStateful::class)->group(functi
         Route::get('/public/kta/print-request', [PublicKtaPrintRequestController::class, 'show']);
         Route::post('/public/kta/print-request', [PublicKtaPrintRequestController::class, 'store']);
     });
+
+    Route::middleware('throttle:member-activation-check')->post('/public/account-activation/check', [AccountActivationController::class, 'check']);
+    Route::middleware('throttle:member-activation-verify')->post('/public/account-activation/verify', [AccountActivationController::class, 'verify']);
+    Route::middleware('throttle:member-password-forgot')->post('/public/password/forgot', [PasswordResetController::class, 'forgot']);
+    Route::middleware('throttle:member-password-reset')->post('/public/password/reset', [PasswordResetController::class, 'reset']);
+});
+
+Route::middleware('throttle:member-applications')->post('/public/member-applications', [MemberApplicationController::class, 'store']);
+Route::middleware('throttle:applicant-login')->post('/applicant/login', [ApplicantAuthController::class, 'login']);
+Route::middleware('auth.applicant')->prefix('applicant')->group(function () {
+    Route::get('/me', [ApplicantAuthController::class, 'me']);
+    Route::post('/logout', [ApplicantAuthController::class, 'logout']);
+    Route::middleware('throttle:applicant-email')->group(function () {
+        Route::post('/email/resend', [MemberApplicationController::class, 'resend']);
+        Route::post('/email/verify', [MemberApplicationController::class, 'verify']);
+    });
+    Route::put('/application', [MemberApplicationController::class, 'update']);
 });
 
 // Paymenku webhook (signature-authenticated; no session/CSRF)
@@ -60,14 +84,23 @@ Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
 
     Route::get('/user', [ApiController::class, 'user']);
     Route::get('/me', [ApiController::class, 'me']);
-    Route::put('/password', [ApiController::class, 'changePassword']);
     Route::post('/logout', [ApiController::class, 'logout']);
+    Route::middleware('throttle:member-account-setup')->group(function () {
+        Route::post('/account/setup/email', [AccountSetupController::class, 'sendEmail']);
+        Route::post('/account/setup/email/verify', [AccountSetupController::class, 'verifyEmail']);
+        Route::post('/account/setup/complete', [AccountSetupController::class, 'complete']);
+    });
 
-    Route::middleware('password-changed')->group(function () {
+    Route::middleware('account-setup-complete')->group(function () {
+        Route::put('/password', [ApiController::class, 'changePassword']);
+
+        Route::middleware('password-changed')->group(function () {
         Route::get('/profile', [ApiController::class, 'profileGet']);
         Route::put('/profile', [ApiController::class, 'profileUpdateJson']);
         Route::get('/id-card', [ApiController::class, 'idCard']);
         Route::get('/me/kta/print-request', [OwnKtaPrintRequestController::class, 'show']);
+        Route::post('/me/kta/print-request', [OwnKtaPrintRequestController::class, 'store'])
+            ->middleware('throttle:kta-print-request');
 
         Route::get('/members/account-reset-audit', [ApiController::class, 'accountResetAudit']);
         Route::put('/members/{id}/account', [ApiController::class, 'resetAccount'])->whereNumber('id');
@@ -145,6 +178,10 @@ Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
     Route::post('/attendance', [ApiController::class, 'attendanceStore']);
 
     // Phase 2C — QR Check-In Foundation (PRD §17.8)
+    Route::post('/checkin/lookup', [CheckInController::class, 'lookup'])
+        ->middleware('throttle:120,1');
+    Route::post('/checkin/onsite', [CheckInController::class, 'onsite'])
+        ->middleware('throttle:60,1');
     Route::post('/checkin', [CheckInController::class, 'store'])
         ->middleware('throttle:60,1');
 
@@ -176,11 +213,20 @@ Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
     Route::get('/kta/print-requests/{id}/card', [KtaCardController::class, 'fromPrintRequest']);
     Route::get('/kta/print-requests/{id}', [AdminKtaPrintRequestController::class, 'show']);
     Route::put('/kta/print-requests/{id}/status', [AdminKtaPrintRequestController::class, 'updateStatus']);
+    Route::get('/kta/settings/price', [KtaPriceSettingController::class, 'show']);
+    Route::put('/kta/settings/price', [KtaPriceSettingController::class, 'update']);
 
     Route::get('/kta/cards', [KtaCardController::class, 'index']);
     Route::get('/kta/cards/{id}', [KtaCardController::class, 'show']);
 
         // Profile
         Route::post('/profile', [ApiController::class, 'profileUpdate']);
+
+        Route::get('/member-applications', [MemberApplicationAdminController::class, 'index']);
+        Route::get('/member-applications/{uuid}', [MemberApplicationAdminController::class, 'show']);
+        Route::put('/member-applications/{uuid}/under-review', [MemberApplicationAdminController::class, 'underReview']);
+        Route::put('/member-applications/{uuid}/approve', [MemberApplicationAdminController::class, 'approve']);
+        Route::put('/member-applications/{uuid}/reject', [MemberApplicationAdminController::class, 'reject']);
+        });
     });
 });

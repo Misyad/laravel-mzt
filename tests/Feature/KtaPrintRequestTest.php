@@ -45,6 +45,8 @@ class KtaPrintRequestTest extends TestCase
             'kta_payment_events',
             'kta_print_request_logs',
             'kta_print_requests',
+            'kta_price_histories',
+            'kta_price_settings',
             'data_users',
             'hak_akses_role',
             'sessions',
@@ -73,14 +75,26 @@ class KtaPrintRequestTest extends TestCase
                 $t->id();
                 $t->string('name');
                 $t->string('email')->nullable();
+                $t->timestamp('email_verified_at')->nullable();
                 $t->string('password')->nullable();
+                $t->string('remember_token')->nullable();
                 $t->string('id_anggota')->nullable()->index();
                 $t->string('is_active')->default('1');
                 $t->timestamp('password_changed_at')->nullable();
+                $t->boolean('account_setup_required')->default(false);
+                $t->timestamp('account_claimed_at')->nullable();
                 $t->timestamps();
             });
         } else {
-            foreach (['id_anggota' => fn ($t) => $t->string('id_anggota')->nullable(), 'is_active' => fn ($t) => $t->string('is_active')->default('1'), 'password_changed_at' => fn ($t) => $t->timestamp('password_changed_at')->nullable()] as $col => $cb) {
+            foreach ([
+                'id_anggota' => fn ($t) => $t->string('id_anggota')->nullable(),
+                'email_verified_at' => fn ($t) => $t->timestamp('email_verified_at')->nullable(),
+                'remember_token' => fn ($t) => $t->string('remember_token')->nullable(),
+                'is_active' => fn ($t) => $t->string('is_active')->default('1'),
+                'password_changed_at' => fn ($t) => $t->timestamp('password_changed_at')->nullable(),
+                'account_setup_required' => fn ($t) => $t->boolean('account_setup_required')->default(false),
+                'account_claimed_at' => fn ($t) => $t->timestamp('account_claimed_at')->nullable(),
+            ] as $col => $cb) {
                 if (! Schema::hasColumn('users', $col)) {
                     Schema::table('users', fn ($table) => $cb($table));
                 }
@@ -148,11 +162,14 @@ class KtaPrintRequestTest extends TestCase
                 $t->id();
                 $t->unsignedBigInteger('id_users');
                 $t->string('id_anggota_snapshot', 50);
+                $t->unsignedTinyInteger('workflow_version')->default(1);
                 $t->string('status', 30)->default('menunggu_pembayaran');
                 $t->string('delivery_method', 20)->default('pickup');
                 $t->string('payment_provider', 30)->nullable();
                 $t->string('payment_reference', 60)->nullable();
                 $t->string('payment_trx_id')->nullable();
+                $t->unsignedBigInteger('base_amount')->nullable();
+                $t->decimal('gateway_fee', 12, 2)->nullable();
                 $t->decimal('payment_amount', 12, 2)->nullable();
                 $t->string('payment_status', 20)->default('pending');
                 $t->dateTime('paid_at')->nullable();
@@ -173,6 +190,23 @@ class KtaPrintRequestTest extends TestCase
                 $t->unsignedBigInteger('completed_by')->nullable();
                 $t->unsignedBigInteger('active_key')->nullable()->unique();
                 $t->timestamps();
+            });
+        }
+        if (! Schema::hasTable('kta_price_settings')) {
+            Schema::create('kta_price_settings', function ($t) {
+                $t->unsignedTinyInteger('id')->primary();
+                $t->unsignedBigInteger('amount');
+                $t->unsignedBigInteger('updated_by')->nullable();
+                $t->timestamps();
+            });
+        }
+        if (! Schema::hasTable('kta_price_histories')) {
+            Schema::create('kta_price_histories', function ($t) {
+                $t->id();
+                $t->unsignedBigInteger('old_amount');
+                $t->unsignedBigInteger('new_amount');
+                $t->unsignedBigInteger('actor_user_id')->nullable();
+                $t->timestamp('created_at')->nullable();
             });
         }
         if (! Schema::hasTable('kta_print_request_logs')) {
@@ -211,7 +245,15 @@ class KtaPrintRequestTest extends TestCase
     private function repairSharedSchema(): void
     {
         if (Schema::hasTable('users')) {
-            foreach (['id_anggota' => fn ($t) => $t->string('id_anggota')->nullable(), 'is_active' => fn ($t) => $t->string('is_active')->default('1'), 'password_changed_at' => fn ($t) => $t->timestamp('password_changed_at')->nullable()] as $col => $cb) {
+            foreach ([
+                'id_anggota' => fn ($t) => $t->string('id_anggota')->nullable(),
+                'email_verified_at' => fn ($t) => $t->timestamp('email_verified_at')->nullable(),
+                'remember_token' => fn ($t) => $t->string('remember_token')->nullable(),
+                'is_active' => fn ($t) => $t->string('is_active')->default('1'),
+                'password_changed_at' => fn ($t) => $t->timestamp('password_changed_at')->nullable(),
+                'account_setup_required' => fn ($t) => $t->boolean('account_setup_required')->default(false),
+                'account_claimed_at' => fn ($t) => $t->timestamp('account_claimed_at')->nullable(),
+            ] as $col => $cb) {
                 if (! Schema::hasColumn('users', $col)) {
                     Schema::table('users', fn ($table) => $cb($table));
                 }
@@ -228,6 +270,17 @@ class KtaPrintRequestTest extends TestCase
             ] as $col => $cb) {
                 if (! Schema::hasColumn('data_users', $col)) {
                     Schema::table('data_users', fn ($table) => $cb($table));
+                }
+            }
+        }
+        if (Schema::hasTable('kta_print_requests')) {
+            foreach ([
+                'workflow_version' => fn ($t) => $t->unsignedTinyInteger('workflow_version')->default(1),
+                'base_amount' => fn ($t) => $t->unsignedBigInteger('base_amount')->nullable(),
+                'gateway_fee' => fn ($t) => $t->decimal('gateway_fee', 12, 2)->nullable(),
+            ] as $col => $cb) {
+                if (! Schema::hasColumn('kta_print_requests', $col)) {
+                    Schema::table('kta_print_requests', fn ($table) => $cb($table));
                 }
             }
         }
@@ -309,7 +362,7 @@ class KtaPrintRequestTest extends TestCase
     public function test_requires_valid_print_token(): void
     {
         $this->makeMember();
-        $this->postJson('/api/public/kta/print-request', ['delivery_method' => 'pickup'])
+        $this->postJson('/api/public/kta/print-request')
             ->assertStatus(401);
     }
 
@@ -324,11 +377,11 @@ class KtaPrintRequestTest extends TestCase
         ], $challenge->ipHash('127.0.0.1'), $challenge->agentHash('Symfony'));
 
         $this->postJson('/api/public/kta/print-request', [
-            'print_token' => $bad, 'delivery_method' => 'pickup',
+            'print_token' => $bad,
         ])->assertStatus(401);
     }
 
-    public function test_creates_request_and_paymenku_transaction(): void
+    public function test_creates_request_with_immutable_price_snapshot_and_gateway_breakdown(): void
     {
         $u = $this->makeMember();
 
@@ -347,20 +400,57 @@ class KtaPrintRequestTest extends TestCase
 
         $res = $this->postJson('/api/public/kta/print-request', [
             'print_token' => $this->printToken($u->id),
-            'delivery_method' => 'pickup',
         ]);
 
         $res->assertStatus(201)
             ->assertJson(['success' => true, 'data' => ['request' => [
                 'status' => 'menunggu_pembayaran',
                 'payment_status' => 'pending',
-                'delivery_method' => 'pickup',
+                'delivery_method' => null,
+                'base_amount' => 25000,
+                'gateway_fee' => '750.00',
+                'payment_amount' => '25750.00',
             ]]]);
 
         $this->assertDatabaseHas('kta_print_requests', [
             'id_users' => $u->id,
+            'workflow_version' => 2,
             'status' => 'menunggu_pembayaran',
+            'delivery_method' => 'none',
+            'base_amount' => 25000,
+            'gateway_fee' => 750,
+            'payment_amount' => 25750,
             'payment_trx_id' => 'IDP-TEST-1',
+        ]);
+        Http::assertSent(fn ($request) => $request['amount'] === 25000
+            && $request['reference_id'] === 'KTA-1'
+            && $request->hasHeader('Idempotency-Key', 'KTA-1'));
+    }
+
+    public function test_gateway_total_below_snapshot_price_is_rejected(): void
+    {
+        $u = $this->makeMember();
+        Http::fake(['paymenku.test/*' => Http::response([
+            'status' => 'success',
+            'data' => [
+                'trx_id' => 'IDP-UNDERPAID',
+                'reference_id' => 'KTA-1',
+                'amount' => '24999.99',
+                'status' => 'pending',
+                'pay_url' => 'https://paymenku.test/pay/underpaid',
+            ],
+        ], 200)]);
+
+        $this->postJson('/api/public/kta/print-request', [
+            'print_token' => $this->printToken($u->id),
+        ])->assertStatus(502);
+
+        $this->assertDatabaseHas('kta_print_requests', [
+            'id_users' => $u->id,
+            'base_amount' => 25000,
+            'payment_trx_id' => null,
+            'payment_amount' => null,
+            'payment_status' => 'pending',
         ]);
     }
 
@@ -370,20 +460,24 @@ class KtaPrintRequestTest extends TestCase
 
         $this->postJson('/api/public/kta/print-request', [
             'print_token' => $this->printToken($u->id),
-            'delivery_method' => 'pickup',
         ])->assertStatus(403);
 
         $this->assertSame(0, KtaPrintRequest::count());
     }
 
-    public function test_delivery_requires_address(): void
+    public function test_new_workflow_rejects_all_logistics_fields(): void
     {
         $u = $this->makeMember();
 
         $this->postJson('/api/public/kta/print-request', [
             'print_token' => $this->printToken($u->id),
             'delivery_method' => 'delivery',
+            'recipient_name' => 'Recipient',
+            'recipient_phone' => '08123456789',
+            'shipping_address' => 'Address',
         ])->assertStatus(422);
+
+        $this->assertSame(0, KtaPrintRequest::count());
     }
 
     public function test_duplicate_submit_is_idempotent(): void
@@ -396,8 +490,8 @@ class KtaPrintRequestTest extends TestCase
 
         $token = $this->printToken($u->id);
 
-        $first = $this->postJson('/api/public/kta/print-request', ['print_token' => $token, 'delivery_method' => 'pickup']);
-        $second = $this->postJson('/api/public/kta/print-request', ['print_token' => $token, 'delivery_method' => 'pickup']);
+        $first = $this->postJson('/api/public/kta/print-request', ['print_token' => $token]);
+        $second = $this->postJson('/api/public/kta/print-request', ['print_token' => $token]);
 
         $first->assertStatus(201);
         $second->assertStatus(200)->assertJson(['success' => true]);
@@ -411,13 +505,150 @@ class KtaPrintRequestTest extends TestCase
         $u = $this->makeMember();
         $service = app(KtaPrintRequestService::class);
 
-        $a = $service->createForUser($u, ['delivery_method' => 'pickup']);
-        $b = $service->createForUser($u, ['delivery_method' => 'pickup']);
+        $a = $service->createForUser($u);
+        $b = $service->createForUser($u);
 
         $this->assertTrue($a['ok']);
         $this->assertTrue($b['ok']);
         $this->assertSame(1, KtaPrintRequest::count());
         $this->assertSame($a['request']->id, $b['request']->id);
+    }
+
+    public function test_admin_price_update_is_authorized_validated_and_audited(): void
+    {
+        Sanctum::actingAs($this->makeStaff('finance'));
+        $this->getJson('/api/kta/settings/price')->assertStatus(403);
+        $this->putJson('/api/kta/settings/price', ['amount' => 30000])->assertStatus(403);
+
+        $admin = $this->makeStaff('admin');
+        Sanctum::actingAs($admin);
+        $this->getJson('/api/kta/settings/price')
+            ->assertSuccessful()
+            ->assertJsonPath('data.setting.amount', 25000)
+            ->assertJsonCount(0, 'data.history');
+
+        $this->putJson('/api/kta/settings/price', ['amount' => 30000])
+            ->assertSuccessful()
+            ->assertJsonPath('data.setting.amount', 30000)
+            ->assertJsonPath('data.history.0.old_amount', 25000)
+            ->assertJsonPath('data.history.0.new_amount', 30000)
+            ->assertJsonPath('data.history.0.actor', $admin->name);
+        $this->assertDatabaseHas('kta_price_histories', [
+            'old_amount' => 25000,
+            'new_amount' => 30000,
+            'actor_user_id' => $admin->id,
+        ]);
+
+        $this->putJson('/api/kta/settings/price', ['amount' => 30000])->assertSuccessful();
+        $this->assertSame(1, DB::table('kta_price_histories')->count());
+        $this->putJson('/api/kta/settings/price', ['amount' => -1])->assertStatus(422);
+        $this->putJson('/api/kta/settings/price', ['amount' => 1.5])->assertStatus(422);
+    }
+
+    public function test_price_changes_apply_only_to_new_request_snapshots(): void
+    {
+        $service = app(KtaPrintRequestService::class);
+        $firstMember = $this->makeMember();
+        $first = $service->createForUser($firstMember)['request'];
+        $this->assertSame(25000, $first->base_amount);
+
+        $admin = $this->makeStaff('admin');
+        Sanctum::actingAs($admin);
+        $this->putJson('/api/kta/settings/price', ['amount' => 30000])->assertSuccessful();
+
+        $secondMember = $this->makeMember([
+            'email' => 'second-price@example.test',
+            'id_anggota' => '0174011120',
+        ]);
+        $second = $service->createForUser($secondMember)['request'];
+
+        $this->assertSame(25000, $first->fresh()->base_amount);
+        $this->assertSame(30000, $second->base_amount);
+    }
+
+    public function test_authenticated_member_can_submit_without_logistics_fields(): void
+    {
+        $member = $this->makeMember();
+        Sanctum::actingAs($member);
+        Http::fake(['paymenku.test/*' => Http::response([
+            'status' => 'success',
+            'data' => [
+                'trx_id' => 'IDP-AUTHENTICATED',
+                'reference_id' => 'KTA-1',
+                'amount' => '25375.00',
+                'status' => 'pending',
+                'pay_url' => 'https://paymenku.test/pay/authenticated',
+            ],
+        ], 200)]);
+
+        $this->postJson('/api/me/kta/print-request')
+            ->assertStatus(201)
+            ->assertJsonPath('data.request.delivery_method', null)
+            ->assertJsonPath('data.request.base_amount', 25000)
+            ->assertJsonPath('data.request.gateway_fee', '375.00')
+            ->assertJsonPath('data.request.payment_amount', '25375.00');
+        $this->assertDatabaseHas('kta_print_requests', [
+            'id_users' => $member->id,
+            'workflow_version' => 2,
+            'delivery_method' => 'none',
+        ]);
+    }
+
+    public function test_missing_price_snapshot_fails_closed_without_creating_payment(): void
+    {
+        $member = $this->makeMember();
+        $request = $this->makePending($member->id);
+        $request->forceFill([
+            'payment_reference' => null,
+            'payment_trx_id' => null,
+            'base_amount' => null,
+            'gateway_fee' => null,
+            'payment_amount' => null,
+        ])->save();
+        Http::fake();
+
+        $result = app(KtaPrintRequestService::class)->ensurePayment($member, $request);
+
+        $this->assertFalse($result['ok']);
+        $this->assertSame(409, $result['code']);
+        $this->assertSame('menunggu_pembayaran', $request->fresh()->status);
+        $this->assertSame('pending', $request->fresh()->payment_status);
+        Http::assertNothingSent();
+    }
+
+    public function test_zero_price_skips_gateway_and_enters_print_queue(): void
+    {
+        DB::table('kta_price_settings')->insert([
+            'id' => 1,
+            'amount' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $member = $this->makeMember();
+        Sanctum::actingAs($member);
+        Http::fake();
+
+        $this->postJson('/api/me/kta/print-request')
+            ->assertStatus(201)
+            ->assertJsonPath('data.request.status', 'menunggu_cetak')
+            ->assertJsonPath('data.request.base_amount', 0)
+            ->assertJsonPath('data.request.gateway_fee', '0.00')
+            ->assertJsonPath('data.request.payment_amount', '0.00')
+            ->assertJsonPath('data.request.payment_status', 'paid');
+
+        Http::assertNothingSent();
+        $this->assertDatabaseHas('kta_print_requests', [
+            'id_users' => $member->id,
+            'payment_provider' => 'none',
+            'payment_trx_id' => null,
+            'status' => 'menunggu_cetak',
+        ]);
+        $this->assertDatabaseHas('kta_print_request_logs', [
+            'kta_print_request_id' => KtaPrintRequest::firstOrFail()->id,
+            'old_status' => 'menunggu_pembayaran',
+            'new_status' => 'menunggu_cetak',
+            'source' => 'system',
+        ]);
     }
 
     // ─────────────────────────── webhook / payment ──────────────────────────
@@ -442,17 +673,20 @@ class KtaPrintRequestTest extends TestCase
         ];
     }
 
-    private function makePending(int $userId, string $ref = 'KTA-1', string $trx = 'IDP-1'): KtaPrintRequest
+    private function makePending(int $userId, string $ref = 'KTA-1', string $trx = 'IDP-1', int $workflowVersion = 2): KtaPrintRequest
     {
         return KtaPrintRequest::create([
             'id_users' => $userId,
             'id_anggota_snapshot' => '0174011119',
+            'workflow_version' => $workflowVersion,
             'status' => KtaPrintStatus::MENUNGGU_PEMBAYARAN->value,
-            'delivery_method' => 'pickup',
+            'delivery_method' => $workflowVersion < 2 ? 'pickup' : 'none',
             'payment_provider' => 'paymenku',
             'payment_reference' => $ref,
             'payment_trx_id' => $trx,
-            'payment_amount' => 25000,
+            'base_amount' => 25000,
+            'gateway_fee' => 750,
+            'payment_amount' => 25750,
             'payment_status' => 'pending',
             'submitted_at' => now(),
             'active_key' => $userId,
@@ -603,20 +837,27 @@ PHP;
         );
     }
 
-    public function test_webhook_wrong_amount_does_not_advance(): void
+    public function test_webhook_requires_exact_reference_transaction_and_amount(): void
     {
         $u = $this->makeMember();
         $req = $this->makePending($u->id);
+        $payloads = [
+            $this->paidPayload('KTA-WRONG', 'IDP-1'),
+            $this->paidPayload('KTA-1', 'IDP-WRONG'),
+            $this->paidPayload('KTA-1', 'IDP-1', '25750.01'),
+            $this->paidPayload('KTA-1', 'IDP-1', '25750.001'),
+        ];
 
-        [$raw, $ts, $sig] = $this->signedWebhook($this->paidPayload('KTA-1', 'IDP-1', '100.00'));
-
-        $this->call('POST', '/api/webhooks/paymenku', [], [], [], [
-            'CONTENT_TYPE' => 'application/json',
-            'HTTP_X_PAYMENKU_TIMESTAMP' => $ts,
-            'HTTP_X_PAYMENKU_SIGNATURE' => $sig,
-        ], $raw)->assertStatus(422);
-
-        $this->assertSame('menunggu_pembayaran', $req->refresh()->status);
+        foreach ($payloads as $payload) {
+            [$raw, $ts, $sig] = $this->signedWebhook($payload);
+            $this->call('POST', '/api/webhooks/paymenku', [], [], [], [
+                'CONTENT_TYPE' => 'application/json',
+                'HTTP_X_PAYMENKU_TIMESTAMP' => $ts,
+                'HTTP_X_PAYMENKU_SIGNATURE' => $sig,
+            ], $raw)->assertStatus(422);
+            $this->assertSame('menunggu_pembayaran', $req->fresh()->status);
+            $this->assertSame('pending', $req->fresh()->payment_status);
+        }
     }
 
     public function test_webhook_unknown_reference_acknowledged(): void
@@ -822,7 +1063,7 @@ PHP;
     public function test_admin_detail_requires_role_and_returns_delivery_fields(): void
     {
         $u = $this->makeMember();
-        $req = $this->makePending($u->id);
+        $req = $this->makePending($u->id, 'KTA-1', 'IDP-1', 1);
         $req->forceFill([
             'delivery_method' => 'delivery',
             'recipient_name' => 'Ahmad Hasan',
@@ -844,10 +1085,10 @@ PHP;
             ->assertJsonPath('data.request.notes', 'Hubungi sebelum dikirim');
     }
 
-    public function test_admin_can_run_full_pickup_flow(): void
+    public function test_grandfathered_pickup_request_can_complete_legacy_flow(): void
     {
         $u = $this->makeMember();
-        $req = $this->makePending($u->id);
+        $req = $this->makePending($u->id, 'KTA-1', 'IDP-1', 1);
         $req->forceFill(['status' => 'menunggu_cetak', 'payment_status' => 'paid'])->save();
 
         Sanctum::actingAs($this->makeStaff('finance'));
@@ -861,10 +1102,10 @@ PHP;
         $this->assertNull($req->active_key);
     }
 
-    public function test_admin_can_run_full_delivery_flow(): void
+    public function test_grandfathered_delivery_request_can_complete_legacy_flow(): void
     {
         $u = $this->makeMember();
-        $req = $this->makePending($u->id);
+        $req = $this->makePending($u->id, 'KTA-1', 'IDP-1', 1);
         $req->forceFill(['status' => 'menunggu_cetak', 'payment_status' => 'paid', 'delivery_method' => 'delivery'])->save();
 
         Sanctum::actingAs($this->makeStaff('ketua'));
@@ -874,6 +1115,24 @@ PHP;
         $this->putJson("/api/kta/print-requests/{$req->id}/status", ['status' => 'selesai'])->assertStatus(200);
 
         $this->assertSame('selesai', $req->refresh()->status);
+    }
+
+    public function test_new_workflow_completes_directly_after_printing(): void
+    {
+        $u = $this->makeMember();
+        $req = $this->makePending($u->id);
+        $req->forceFill(['status' => 'menunggu_cetak', 'payment_status' => 'paid'])->save();
+
+        Sanctum::actingAs($this->makeStaff('finance'));
+
+        $this->putJson("/api/kta/print-requests/{$req->id}/status", ['status' => 'sudah_dicetak'])->assertStatus(200);
+        $this->putJson("/api/kta/print-requests/{$req->id}/status", ['status' => 'siap_diambil'])->assertStatus(422);
+        $this->putJson("/api/kta/print-requests/{$req->id}/status", ['status' => 'selesai'])->assertStatus(200);
+
+        $req->refresh();
+        $this->assertSame('selesai', $req->status);
+        $this->assertNull($req->active_key);
+        $this->assertNotNull($req->completed_at);
     }
 
     public function test_illegal_transition_rejected(): void
@@ -892,7 +1151,7 @@ PHP;
     public function test_pickup_branch_rejected_for_delivery_request(): void
     {
         $u = $this->makeMember();
-        $req = $this->makePending($u->id);
+        $req = $this->makePending($u->id, 'KTA-1', 'IDP-1', 1);
         $req->forceFill(['status' => 'menunggu_cetak', 'delivery_method' => 'delivery'])->save();
 
         Sanctum::actingAs($this->makeStaff('finance'));
@@ -981,7 +1240,7 @@ PHP;
             'id_anggota' => '0174011120',
         ]);
 
-        $older = $this->makePending($owner->id, 'KTA-OLD', 'IDP-OLD');
+        $older = $this->makePending($owner->id, 'KTA-OLD', 'IDP-OLD', 1);
         $older->forceFill([
             'status' => KtaPrintStatus::SELESAI->value,
             'payment_status' => 'paid',
@@ -997,6 +1256,7 @@ PHP;
         $latest = KtaPrintRequest::create([
             'id_users' => $owner->id,
             'id_anggota_snapshot' => $owner->id_anggota,
+            'workflow_version' => 1,
             'status' => KtaPrintStatus::DITOLAK->value,
             'delivery_method' => 'delivery',
             'payment_provider' => 'paymenku',
@@ -1026,6 +1286,8 @@ PHP;
             'reference',
             'status',
             'delivery_method',
+            'base_amount',
+            'gateway_fee',
             'payment_status',
             'payment_amount',
             'submitted_at',

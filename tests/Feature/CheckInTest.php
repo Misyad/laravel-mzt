@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Events\TicketStatusChanged;
 use App\Models\HakAksesRole;
 use App\Models\Order;
+use App\Models\Payment;
 use App\Models\Ticket;
 use App\Models\User;
 use App\Services\CommunicationDispatcher;
@@ -41,6 +42,8 @@ class CheckInTest extends TestCase
             'prisensi_kehadiran',
             'ticket_logs',
             'tickets',
+            'payment_logs',
+            'payments',
             'orders',
             'tanggal_events',
             'hak_akses_role',
@@ -57,6 +60,8 @@ class CheckInTest extends TestCase
         Schema::dropIfExists('prisensi_kehadiran');
         Schema::dropIfExists('ticket_logs');
         Schema::dropIfExists('tickets');
+        Schema::dropIfExists('payment_logs');
+        Schema::dropIfExists('payments');
         Schema::dropIfExists('orders');
         Schema::dropIfExists('tanggal_events');
         Schema::dropIfExists('users');
@@ -107,7 +112,38 @@ class CheckInTest extends TestCase
             $table->decimal('total_amount', 12, 2)->default(0);
             $table->string('status_registrasi', 30)->default('draft');
             $table->string('payment_status', 30)->default('pending');
+            $table->string('payment_choice', 30)->default('pay_now');
             $table->timestamps();
+        });
+
+        Schema::create('payments', function ($table) {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->string('nomor_payment', 30)->unique();
+            $table->unsignedBigInteger('id_order');
+            $table->string('method', 30);
+            $table->string('source', 30)->nullable();
+            $table->decimal('amount', 12, 2);
+            $table->string('status', 30)->default('pending');
+            $table->dateTime('paid_at')->nullable();
+            $table->dateTime('verified_at')->nullable();
+            $table->unsignedBigInteger('verified_by')->nullable();
+            $table->string('reference_number')->nullable();
+            $table->string('gateway_transaction_id')->nullable();
+            $table->text('note')->nullable();
+            $table->unsignedBigInteger('created_by')->nullable();
+            $table->unsignedBigInteger('updated_by')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('payment_logs', function ($table) {
+            $table->id();
+            $table->unsignedBigInteger('id_payment');
+            $table->string('old_status', 30)->nullable();
+            $table->string('new_status', 30);
+            $table->text('note')->nullable();
+            $table->unsignedBigInteger('changed_by')->nullable();
+            $table->timestamp('created_at')->useCurrent();
         });
 
         Schema::create('tickets', function ($table) {
@@ -191,8 +227,11 @@ class CheckInTest extends TestCase
      *
      * @return array{ticket: Ticket, order: Order, tanggalId: int, participant: User}
      */
-    private function seedDomain(string $status = 'issued'): array
-    {
+    private function seedDomain(
+        string $status = 'issued',
+        string $paymentStatus = 'paid',
+        string $paymentChoice = 'pay_now'
+    ): array {
         $participant = User::factory()->create([
             'id_anggota' => (string) random_int(100_000, 999_999),
         ]);
@@ -207,8 +246,22 @@ class CheckInTest extends TestCase
             'event_start_at' => '2026-08-01',
             'total_amount' => 100_000,
             'status_registrasi' => 'confirmed',
-            'payment_status' => 'paid',
+            'payment_status' => $paymentStatus,
+            'payment_choice' => $paymentChoice,
         ]);
+
+        if ($paymentStatus === 'paid') {
+            Payment::create([
+                'uuid' => (string) Str::uuid(),
+                'nomor_payment' => 'PAY-' . Str::upper(Str::random(8)),
+                'id_order' => $order->id,
+                'method' => 'transfer',
+                'source' => 'verified_transfer',
+                'amount' => 100_000,
+                'status' => 'paid',
+                'paid_at' => now(),
+            ]);
+        }
 
         DB::table('tanggal_events')->insert([
             'id_event' => 1,
@@ -330,6 +383,154 @@ class CheckInTest extends TestCase
             $this->postJson('/api/checkin', $this->payload($seed['ticket']->uuid, $seed['tanggalId']))
                 ->assertStatus(409);
         }
+    }
+
+    public function test_scanner_lookup_is_read_only_and_supports_ticket_number(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', [
+            'identifier' => $seed['ticket']->nomor_ticket,
+            'id_event' => 1,
+            'id_tanggal' => $seed['tanggalId'],
+        ])->assertStatus(200)
+            ->assertJsonPath('data.ticket.uuid', $seed['ticket']->uuid)
+            ->assertJsonPath('data.participant.name', $seed['participant']->name)
+            ->assertJsonPath('data.event.event_name', 'MZT Gathering')
+            ->assertJsonPath('data.payment.status', 'paid')
+            ->assertJsonPath('data.payment.amount', 100000)
+            ->assertJsonPath('data.attendance.status', 'not_present');
+
+        $this->assertSame('issued', DB::table('tickets')->where('id', $seed['ticket']->id)->value('status'));
+        $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
+        $this->assertSame(0, DB::table('ticket_logs')->count());
+    }
+
+    public function test_legacy_paid_order_without_payment_ledger_can_be_looked_up_and_checked_in(): void
+    {
+        $seed = $this->seedDomain('issued');
+        Payment::where('id_order', $seed['order']->id)->delete();
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $lookup = [
+            'identifier' => $seed['ticket']->uuid,
+            'id_event' => 1,
+            'id_tanggal' => $seed['tanggalId'],
+        ];
+
+        $this->postJson('/api/checkin/lookup', $lookup)
+            ->assertStatus(200)
+            ->assertJsonPath('data.payment.status', 'paid')
+            ->assertJsonPath('data.payment.amount', 100000)
+            ->assertJsonPath('data.payment.source', null)
+            ->assertJsonPath('data.attendance.status', 'not_present');
+
+        $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
+
+        $this->postJson('/api/checkin', $this->payload($seed['ticket']->uuid, $seed['tanggalId']))
+            ->assertStatus(200)
+            ->assertJsonPath('data.ticket.status', 'checked_in');
+
+        $this->assertSame(1, DB::table('prisensi_kehadiran')->count());
+    }
+
+    public function test_scanner_lookup_rejects_wrong_event_without_writes(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $operator = $this->makeUser('event');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', [
+            'identifier' => $seed['ticket']->uuid,
+            'id_event' => 999,
+            'id_tanggal' => $seed['tanggalId'],
+        ])->assertStatus(422);
+
+        $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
+    }
+
+    public function test_unpaid_pay_now_ticket_cannot_check_in(): void
+    {
+        $seed = $this->seedDomain('issued', 'pending', 'pay_now');
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin', $this->payload($seed['ticket']->uuid, $seed['tanggalId']))
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'Pembayaran belum lunas');
+
+        $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
+    }
+
+    public function test_onsite_amount_must_match_server_outstanding_and_rolls_back(): void
+    {
+        $seed = $this->seedDomain('issued', 'pending', 'pay_at_venue');
+        $operator = $this->makeUser('event');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/onsite', [
+            'ticket_uuid' => $seed['ticket']->uuid,
+            'id_tanggal' => $seed['tanggalId'],
+            'gate' => 'Gate B',
+            'amount' => 50_000,
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'Nominal pembayaran tidak sesuai sisa tagihan');
+
+        $this->assertSame(0, DB::table('payments')->count());
+        $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
+        $this->assertSame('issued', DB::table('tickets')->where('id', $seed['ticket']->id)->value('status'));
+    }
+
+    public function test_onsite_payment_and_attendance_are_atomic_and_audited(): void
+    {
+        $seed = $this->seedDomain('issued', 'pending', 'pay_at_venue');
+        $operator = $this->makeUser('event');
+        Sanctum::actingAs($operator);
+
+        $payload = [
+            'ticket_uuid' => $seed['ticket']->uuid,
+            'id_tanggal' => $seed['tanggalId'],
+            'gate' => 'Gate B',
+            'amount' => 100_000,
+        ];
+
+        $this->postJson('/api/checkin/onsite', $payload)
+            ->assertStatus(200)
+            ->assertJsonPath('data.payment.status', 'paid')
+            ->assertJsonPath('data.payment.source', 'on_site')
+            ->assertJsonPath('data.attendance.status', 'present');
+
+        $this->assertDatabaseHas('payments', [
+            'id_order' => $seed['order']->id,
+            'method' => 'cash',
+            'source' => 'on_site',
+            'amount' => 100_000,
+            'status' => 'paid',
+            'verified_by' => $operator->id,
+        ]);
+        $payment = Payment::where('id_order', $seed['order']->id)->firstOrFail();
+        $this->assertNotNull($payment->paid_at);
+        $this->assertDatabaseHas('payment_logs', [
+            'id_payment' => $payment->id,
+            'old_status' => 'pending',
+            'new_status' => 'paid',
+            'note' => 'on_site',
+            'changed_by' => $operator->id,
+        ]);
+        $this->assertDatabaseHas('prisensi_kehadiran', [
+            'id_ticket' => $seed['ticket']->id,
+            'gate' => 'Gate B',
+            'scanned_by' => $operator->id,
+        ]);
+        $this->assertSame('paid', DB::table('orders')->where('id', $seed['order']->id)->value('payment_status'));
+        $this->assertSame('checked_in', DB::table('tickets')->where('id', $seed['ticket']->id)->value('status'));
+
+        $this->postJson('/api/checkin/onsite', $payload)->assertStatus(409);
+        $this->assertSame(1, DB::table('payments')->count());
+        $this->assertSame(1, DB::table('prisensi_kehadiran')->count());
     }
 
     /* ------------------------------------------------------------ happy path */

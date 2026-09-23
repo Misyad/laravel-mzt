@@ -5,12 +5,15 @@ namespace App\Http\Controllers\admin;
 use App\Http\Controllers\Controller;
 use App\Models\DataUser;
 use App\Models\User;
+use App\Services\MemberIdentityService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
 use Image;
 
 class C_profil extends Controller
 {
+    public function __construct(private MemberIdentityService $identity) {}
+
     function index(Request $request)
     {
         $data = User::join('data_users','users.id','=','data_users.id_users')
@@ -48,6 +51,9 @@ class C_profil extends Controller
 
             return redirect()->back();
         }
+        if ($request->filled('email')) {
+            $this->identity->updateUserEmail($data_diri, $request->email);
+        }
 
         $profileData = [
             'alamat' => $request->alamat,
@@ -70,7 +76,6 @@ class C_profil extends Controller
 
         $data_diri->forceFill([
             'name' => $request->nama,
-            'email' => $request->email,
             'jatah_edit' => ((int) $data_diri->jatah_edit) + 1,
         ])->save();
 
