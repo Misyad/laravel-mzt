@@ -322,6 +322,9 @@ class AuthorizationMatrixTest extends TestCase
     {
         $paths = [
             ['GET', '/api/members'],
+            ['GET', '/api/members/role-targets'],
+            ['GET', '/api/members/1/roles'],
+            ['PUT', '/api/members/1/roles'],
             ['GET', '/api/members/account-reset-audit'],
             ['PUT', '/api/members/1/account'],
             ['PUT', '/api/members/1/status'],
@@ -381,6 +384,123 @@ class AuthorizationMatrixTest extends TestCase
         $this->getJson("/api/members/{$target->id}")
             ->assertSuccessful()
             ->assertJsonPath('success', true);
+    }
+
+    public function test_member_role_management_is_ketua_admin_only(): void
+    {
+        $target = $this->makeAlumni();
+        $this->makeMemberData($target->id);
+
+        Sanctum::actingAs($this->makeUser('finance'));
+        $this->getJson('/api/members/role-targets')->assertStatus(403);
+        $this->getJson("/api/members/{$target->id}/roles")->assertStatus(403);
+        $this->putJson("/api/members/{$target->id}/roles", ['roles' => []])->assertStatus(403);
+
+        foreach (['ketua', 'admin'] as $role) {
+            Sanctum::actingAs($this->makeUser($role));
+            $this->getJson('/api/members/role-targets')
+                ->assertSuccessful()
+                ->assertJsonPath('success', true);
+            $this->getJson("/api/members/{$target->id}/roles")
+                ->assertSuccessful()
+                ->assertJsonPath('success', true);
+        }
+    }
+
+    public function test_member_role_targets_keep_members_with_optional_roles_selectable(): void
+    {
+        $target = $this->makeAlumni();
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'profil']);
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'event']);
+        $this->makeMemberData($target->id);
+
+        Sanctum::actingAs($this->makeUser('admin'));
+        $this->getJson('/api/members')
+            ->assertSuccessful()
+            ->assertJsonMissing(['id_users' => $target->id]);
+        $this->getJson('/api/members/role-targets')
+            ->assertSuccessful()
+            ->assertJsonFragment([
+                'id_users' => $target->id,
+                'id_anggota' => $target->id_anggota,
+                'nama' => $target->name,
+            ]);
+    }
+
+    public function test_member_role_management_returns_effective_assignments_and_active_optional_catalog(): void
+    {
+        $target = $this->makeAlumni();
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'profil']);
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'event']);
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'finance']);
+        $this->makeMemberData($target->id);
+        RoleUser::where('nama_role', 'finance')->update(['is_active' => '0']);
+
+        Sanctum::actingAs($this->makeUser('admin'));
+        $this->getJson("/api/members/{$target->id}/roles")
+            ->assertSuccessful()
+            ->assertExactJson([
+                'success' => true,
+                'data' => [
+                    'required_roles' => ['anggota', 'profil'],
+                    'assigned_roles' => ['anggota', 'event', 'profil'],
+                    'optional_roles' => ['admin', 'dashboard', 'event', 'ketua', 'prisensi'],
+                ],
+            ]);
+    }
+
+    public function test_member_role_update_replaces_only_roles_and_accepts_explicit_empty_selection(): void
+    {
+        $target = $this->makeAlumni();
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'profil']);
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'event']);
+        $profileId = $this->makeMemberData($target->id);
+        $profileBefore = DB::table('data_users')->where('id', $profileId)->first();
+
+        Sanctum::actingAs($this->makeUser('admin'));
+        $this->putJson("/api/members/{$target->id}/roles", ['roles' => ['dashboard']])
+            ->assertSuccessful()
+            ->assertJsonPath('data.assigned_roles', ['anggota', 'dashboard', 'profil']);
+        $this->assertSame([
+            ['anggota', 'access'],
+            ['dashboard', 'access'],
+            ['profil', 'access'],
+        ], $this->assignedRoles($target));
+
+        $this->putJson("/api/members/{$target->id}/roles", ['roles' => []])
+            ->assertSuccessful()
+            ->assertJsonPath('data.assigned_roles', ['anggota', 'profil']);
+        $this->assertSame([
+            ['anggota', 'access'],
+            ['profil', 'access'],
+        ], $this->assignedRoles($target));
+        $this->assertEquals($profileBefore, DB::table('data_users')->where('id', $profileId)->first());
+    }
+
+    public function test_member_role_update_rejects_invalid_selection_without_mutation(): void
+    {
+        $target = $this->makeAlumni();
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'profil']);
+        HakAksesRole::create(['id_users' => $target->id, 'nama_role' => 'event']);
+        $this->makeMemberData($target->id);
+        $before = $this->assignedRoles($target);
+
+        Sanctum::actingAs($this->makeUser('admin'));
+        $this->putJson("/api/members/{$target->id}/roles", ['roles' => ['unknown']])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('roles');
+        $this->putJson("/api/members/{$target->id}/roles", ['roles' => ['event', ' EVENT ']])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('roles');
+
+        $this->assertSame($before, $this->assignedRoles($target));
+    }
+
+    public function test_member_role_management_returns_not_found_for_unknown_member(): void
+    {
+        Sanctum::actingAs($this->makeUser('admin'));
+        $this->getJson('/api/members/999999/roles')->assertNotFound();
+        $this->putJson('/api/members/999999/roles', ['roles' => []])->assertNotFound();
     }
 
     /* ------------------------- B/C. Member create/update/delete + escalation */

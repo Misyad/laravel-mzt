@@ -91,6 +91,9 @@ Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
 
     // Members
     Route::get('/members', [ApiController::class, 'membersIndex']);
+        Route::get('/members/role-targets', [ApiController::class, 'memberRoleTargetsIndex']);
+        Route::get('/members/{id}/roles', [ApiController::class, 'memberRolesShow'])->whereNumber('id');
+        Route::put('/members/{id}/roles', [ApiController::class, 'memberRolesUpdate'])->whereNumber('id');
     Route::get('/members/{id}', [ApiController::class, 'membersShow'])->whereNumber('id');
     Route::post('/members/{id}', [ApiController::class, 'membersUpdate'])->whereNumber('id');
 

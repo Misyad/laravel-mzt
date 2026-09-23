@@ -22,6 +22,7 @@ use App\Models\Tanggal_event;
 use App\Models\TemplateIdCard;
 use App\Models\Kontak;
 use App\Models\Order;
+use App\Models\RoleUser;
 use App\Services\RegistrationService;
 use App\Services\EventCapacityService;
 use Carbon\Carbon;
@@ -817,6 +818,96 @@ class ApiController extends Controller
             'success' => true,
             'data' => $data,
         ]);
+    }
+
+    public function memberRoleTargetsIndex(Request $request)
+    {
+        Gate::forUser($request->user())->authorize('writeMember', MemberManagement::class);
+
+        $data = DataUser::with('user')
+            ->whereHas('user')
+            ->get()
+            ->groupBy('id_users')
+            ->filter(fn ($profiles) => $profiles->count() === 1 && $profiles->first()->user)
+            ->map(function ($profiles) {
+                $member = $profiles->first();
+
+                return [
+                    'id' => $member->id,
+                    'id_users' => $member->id_users,
+                    'id_anggota' => $member->user->id_anggota ?? '',
+                    'nama' => $member->user->name ?? '',
+                    'email' => $member->user->email,
+                    'no_hp' => $member->no_hp ?? '',
+                    'alamat' => $member->alamat ?? '',
+                    'niqobah' => $member->niqobah ?? '',
+                    'pekerjaan' => $member->pekerjaan ?? '',
+                    'foto' => $member->foto,
+                    'tahun_masuk' => $member->tahun_masuk,
+                    'tahun_keluar' => $member->tahun_keluar,
+                    'tempat_lahir' => $member->tempat_lahir ?? '',
+                    'tanggal_lahir' => $member->tanggal_lahir,
+                    'has_account' => true,
+                    'account_is_active' => (int) $member->user->is_active,
+                    'login_count' => (int) $member->user->login_count,
+                    'last_login' => $member->user->last_login,
+                ];
+            })
+            ->values();
+
+        return response()->json([
+            'success' => true,
+            'data' => $data,
+        ]);
+    }
+
+    public function memberRolesShow(Request $request, $id)
+    {
+        Gate::forUser($request->user())->authorize('writeMember', MemberManagement::class);
+
+        $user = User::query()->whereKey($id)->first();
+        if (! $user || ! DataUser::query()->where('id_users', $id)->exists()) {
+            return response()->json(['success' => false, 'message' => 'Member not found'], 404);
+        }
+
+        $roles = RoleGuard::roles($user);
+        $optionalRoles = RoleUser::query()
+            ->where('is_active', '1')
+            ->pluck('nama_role')
+            ->map([RoleGuard::class, 'normalize'])
+            ->filter(fn (string $role) => $role !== '' && ! in_array($role, RoleGuard::REQUIRED_MEMBER_ROLES, true))
+            ->unique()
+            ->sort()
+            ->values()
+            ->all();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'required_roles' => RoleGuard::REQUIRED_MEMBER_ROLES,
+                'assigned_roles' => $roles,
+                'optional_roles' => $optionalRoles,
+            ],
+        ]);
+    }
+
+    public function memberRolesUpdate(Request $request, $id)
+    {
+        Gate::forUser($request->user())->authorize('writeMember', MemberManagement::class);
+
+        $request->validate([
+            'roles' => 'present|array',
+            'roles.*' => 'string|distinct:strict|max:255',
+        ]);
+
+        $user = User::query()->whereKey($id)->first();
+        if (! $user || ! DataUser::query()->where('id_users', $id)->exists()) {
+            return response()->json(['success' => false, 'message' => 'Member not found'], 404);
+        }
+
+        RoleGuard::replaceMemberRoles($user, $request->input('roles'));
+
+        return $this->memberRolesShow($request, $id);
     }
 
     public function membersShow(Request $request, $id)
