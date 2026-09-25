@@ -33,7 +33,7 @@ class CheckInTest extends TestCase
     {
         parent::setUp();
 
-        if (!self::$schemaBuilt) {
+        if (! self::$schemaBuilt) {
             $this->buildSchema();
             self::$schemaBuilt = true;
         }
@@ -46,6 +46,8 @@ class CheckInTest extends TestCase
             'payments',
             'orders',
             'tanggal_events',
+            'events',
+            'data_users',
             'hak_akses_role',
             'users',
             'personal_access_tokens',
@@ -64,6 +66,8 @@ class CheckInTest extends TestCase
         Schema::dropIfExists('payments');
         Schema::dropIfExists('orders');
         Schema::dropIfExists('tanggal_events');
+        Schema::dropIfExists('events');
+        Schema::dropIfExists('data_users');
         Schema::dropIfExists('users');
 
         Schema::create('users', function ($table) {
@@ -76,6 +80,22 @@ class CheckInTest extends TestCase
             $table->timestamp('email_verified_at')->nullable();
             $table->string('remember_token')->nullable();
             $table->timestamp('password_changed_at')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::create('data_users', function ($table) {
+            $table->id();
+            $table->unsignedBigInteger('id_users');
+            $table->string('foto')->nullable();
+            $table->string('niqobah')->nullable();
+            $table->string('is_active')->default('1');
+            $table->timestamps();
+        });
+
+        Schema::create('events', function ($table) {
+            $table->id();
+            $table->string('judul_event');
+            $table->string('is_active')->default('1');
             $table->timestamps();
         });
 
@@ -238,7 +258,7 @@ class CheckInTest extends TestCase
 
         $order = Order::create([
             'uuid' => (string) Str::uuid(),
-            'nomor_order' => 'ORD-' . Str::upper(Str::random(8)),
+            'nomor_order' => 'ORD-'.Str::upper(Str::random(8)),
             'id_event' => 1,
             'id_anggota' => $participant->id_anggota,
             'event_name' => 'MZT Gathering',
@@ -253,7 +273,7 @@ class CheckInTest extends TestCase
         if ($paymentStatus === 'paid') {
             Payment::create([
                 'uuid' => (string) Str::uuid(),
-                'nomor_payment' => 'PAY-' . Str::upper(Str::random(8)),
+                'nomor_payment' => 'PAY-'.Str::upper(Str::random(8)),
                 'id_order' => $order->id,
                 'method' => 'transfer',
                 'source' => 'verified_transfer',
@@ -262,6 +282,24 @@ class CheckInTest extends TestCase
                 'paid_at' => now(),
             ]);
         }
+
+        DB::table('events')->updateOrInsert([
+            'id' => 1,
+        ], [
+            'judul_event' => 'MZT Gathering',
+            'is_active' => '1',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('data_users')->insert([
+            'id_users' => $participant->id,
+            'foto' => 'image/anggota/peserta.jpg',
+            'niqobah' => 'Niqobah A',
+            'is_active' => '1',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
 
         DB::table('tanggal_events')->insert([
             'id_event' => 1,
@@ -274,7 +312,7 @@ class CheckInTest extends TestCase
 
         $ticket = Ticket::create([
             'uuid' => (string) Str::uuid(),
-            'nomor_ticket' => 'TKT-' . Str::upper(Str::random(8)),
+            'nomor_ticket' => 'TKT-'.Str::upper(Str::random(8)),
             'id_order' => $order->id,
             'qr_payload' => (string) Str::uuid(),
             'status' => $status,
@@ -293,6 +331,15 @@ class CheckInTest extends TestCase
         ], $extra);
     }
 
+    private function lookupPayload(string $identifier, int $tanggalId, array $extra = []): array
+    {
+        return array_merge([
+            'identifier' => $identifier,
+            'id_event' => 1,
+            'id_tanggal' => $tanggalId,
+        ], $extra);
+    }
+
     /* ---------------------------------------------------------- authorization */
 
     public function test_unauthenticated_request_is_rejected(): void
@@ -308,6 +355,18 @@ class CheckInTest extends TestCase
 
         $this->postJson('/api/checkin', $this->payload($seed['ticket']->uuid, $seed['tanggalId']))
             ->assertStatus(403);
+    }
+
+    public function test_lookup_authorizes_before_resolving_identifier(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $operator = $this->makeUser('anggota');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload('00000000', $seed['tanggalId'], [
+            'identifier_type' => 'member_card',
+        ]))->assertStatus(403)
+            ->assertJsonPath('message', 'Forbidden');
     }
 
     public function test_prisensi_role_can_check_in(): void
@@ -398,6 +457,8 @@ class CheckInTest extends TestCase
         ])->assertStatus(200)
             ->assertJsonPath('data.ticket.uuid', $seed['ticket']->uuid)
             ->assertJsonPath('data.participant.name', $seed['participant']->name)
+            ->assertJsonPath('data.participant.foto', 'image/anggota/peserta.jpg')
+            ->assertJsonPath('data.participant.niqobah', 'Niqobah A')
             ->assertJsonPath('data.event.event_name', 'MZT Gathering')
             ->assertJsonPath('data.payment.status', 'paid')
             ->assertJsonPath('data.payment.amount', 100000)
@@ -406,6 +467,202 @@ class CheckInTest extends TestCase
         $this->assertSame('issued', DB::table('tickets')->where('id', $seed['ticket']->id)->value('status'));
         $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
         $this->assertSame(0, DB::table('ticket_logs')->count());
+    }
+
+    public function test_explicit_ticket_lookup_supports_qr_payload(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload($seed['ticket']->qr_payload, $seed['tanggalId'], [
+            'identifier_type' => 'ticket',
+        ]))->assertStatus(200)
+            ->assertJsonPath('data.ticket.uuid', $seed['ticket']->uuid);
+    }
+
+    public function test_lookup_rejects_unknown_identifier_type(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload($seed['ticket']->uuid, $seed['tanggalId'], [
+            'identifier_type' => 'barcode',
+        ]))->assertStatus(422);
+    }
+
+    public function test_member_card_lookup_preserves_leading_zeroes(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $seed['participant']->update(['id_anggota' => '00001234']);
+        $seed['order']->update(['id_anggota' => '00001234']);
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $payload = $this->lookupPayload('00001234', $seed['tanggalId'], [
+            'identifier_type' => 'member_card',
+        ]);
+
+        $this->postJson('/api/checkin/lookup', $payload)
+            ->assertStatus(200)
+            ->assertJsonPath('data.ticket.uuid', $seed['ticket']->uuid)
+            ->assertJsonPath('data.participant.id_anggota', '00001234');
+
+        $this->assertSame(1, DB::table('tickets')->where('id_order', $seed['order']->id)->count());
+        $this->assertSame('issued', DB::table('tickets')->where('id', $seed['ticket']->id)->value('status'));
+        $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
+        $this->assertSame(0, DB::table('ticket_logs')->count());
+
+        $this->postJson('/api/checkin/lookup', array_merge($payload, ['identifier' => '1234']))
+            ->assertStatus(404)
+            ->assertJsonPath('message', 'Anggota tidak ditemukan');
+    }
+
+    public function test_member_card_lookup_resolves_registration_for_selected_event(): void
+    {
+        $seed = $this->seedDomain('issued');
+        DB::table('events')->insert([
+            'id' => 2,
+            'judul_event' => 'MZT Workshop',
+            'is_active' => '1',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('tanggal_events')->insert([
+            'id_event' => 2,
+            'tanggal' => '2026-08-10',
+            'set_jam' => 'seharian',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $tanggalId = (int) DB::getPdo()->lastInsertId();
+        $order = Order::create([
+            'uuid' => (string) Str::uuid(),
+            'nomor_order' => 'ORD-'.Str::upper(Str::random(8)),
+            'id_event' => 2,
+            'id_anggota' => $seed['participant']->id_anggota,
+            'event_name' => 'MZT Workshop',
+            'event_price' => 50_000,
+            'event_start_at' => '2026-08-10',
+            'total_amount' => 50_000,
+            'status_registrasi' => 'registered',
+            'payment_status' => 'paid',
+            'payment_choice' => 'pay_now',
+        ]);
+        $ticket = Ticket::create([
+            'uuid' => (string) Str::uuid(),
+            'nomor_ticket' => 'TKT-'.Str::upper(Str::random(8)),
+            'id_order' => $order->id,
+            'qr_payload' => (string) Str::uuid(),
+            'status' => 'issued',
+            'issued_at' => now(),
+        ]);
+        $operator = $this->makeUser('event');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', [
+            'identifier' => $seed['participant']->id_anggota,
+            'identifier_type' => 'member_card',
+            'id_event' => 2,
+            'id_tanggal' => $tanggalId,
+        ])->assertStatus(200)
+            ->assertJsonPath('data.ticket.uuid', $ticket->uuid)
+            ->assertJsonPath('data.event.id_event', 2)
+            ->assertJsonPath('data.event.event_name', 'MZT Workshop');
+
+        $this->postJson('/api/checkin/lookup', [
+            'identifier' => $seed['participant']->id_anggota,
+            'identifier_type' => 'member_card',
+            'id_event' => 2,
+            'id_tanggal' => $seed['tanggalId'],
+        ])->assertStatus(422)
+            ->assertJsonPath('message', 'Tanggal kegiatan tidak valid untuk tiket ini');
+    }
+
+    public function test_member_card_lookup_rejects_unregistered_member(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $member = User::factory()->create([
+            'id_anggota' => '00007777',
+        ]);
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload($member->id_anggota, $seed['tanggalId'], [
+            'identifier_type' => 'member_card',
+        ]))->assertStatus(404)
+            ->assertJsonPath('message', 'Anggota belum terdaftar pada event ini');
+    }
+
+    public function test_member_card_lookup_rejects_registration_without_ticket(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $seed['ticket']->delete();
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload($seed['participant']->id_anggota, $seed['tanggalId'], [
+            'identifier_type' => 'member_card',
+        ]))->assertStatus(404)
+            ->assertJsonPath('message', 'Tiket aktif tidak ditemukan untuk registrasi ini');
+    }
+
+    public function test_member_card_lookup_rejects_registration_without_usable_ticket(): void
+    {
+        $seed = $this->seedDomain('revoked');
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload($seed['participant']->id_anggota, $seed['tanggalId'], [
+            'identifier_type' => 'member_card',
+        ]))->assertStatus(404)
+            ->assertJsonPath('message', 'Tiket aktif tidak ditemukan untuk registrasi ini');
+    }
+
+    public function test_member_card_lookup_rejects_ambiguous_registration(): void
+    {
+        $seed = $this->seedDomain('issued');
+        Order::create([
+            'uuid' => (string) Str::uuid(),
+            'nomor_order' => 'ORD-'.Str::upper(Str::random(8)),
+            'id_event' => 1,
+            'id_anggota' => $seed['participant']->id_anggota,
+            'event_name' => 'MZT Gathering',
+            'event_price' => 100_000,
+            'event_start_at' => '2026-08-01',
+            'total_amount' => 100_000,
+            'status_registrasi' => 'confirmed',
+            'payment_status' => 'paid',
+            'payment_choice' => 'pay_now',
+        ]);
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload($seed['participant']->id_anggota, $seed['tanggalId'], [
+            'identifier_type' => 'member_card',
+        ]))->assertStatus(409)
+            ->assertJsonPath('message', 'Registrasi anggota tidak unik');
+    }
+
+    public function test_member_card_lookup_rejects_ambiguous_usable_tickets(): void
+    {
+        $seed = $this->seedDomain('issued');
+        Ticket::create([
+            'uuid' => (string) Str::uuid(),
+            'nomor_ticket' => 'TKT-'.Str::upper(Str::random(8)),
+            'id_order' => $seed['order']->id,
+            'qr_payload' => (string) Str::uuid(),
+            'status' => 'issued',
+            'issued_at' => now(),
+        ]);
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload($seed['participant']->id_anggota, $seed['tanggalId'], [
+            'identifier_type' => 'member_card',
+        ]))->assertStatus(409)
+            ->assertJsonPath('message', 'Tiket aktif untuk registrasi ini tidak unik');
     }
 
     public function test_legacy_paid_order_without_payment_ledger_can_be_looked_up_and_checked_in(): void
@@ -452,6 +709,80 @@ class CheckInTest extends TestCase
         $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
     }
 
+    public function test_ineligible_orders_are_rejected_by_lookup_check_in_and_onsite(): void
+    {
+        $seed = $this->seedDomain('issued', 'pending', 'pay_at_venue');
+        $operator = $this->makeUser('event');
+        Sanctum::actingAs($operator);
+
+        foreach (['draft', 'cancelled', 'finished'] as $status) {
+            $seed['order']->update(['status_registrasi' => $status]);
+
+            $this->postJson('/api/checkin/lookup', $this->lookupPayload($seed['participant']->id_anggota, $seed['tanggalId'], [
+                'identifier_type' => 'member_card',
+            ]))->assertStatus(409)
+                ->assertJsonPath('message', 'Status registrasi tidak dapat digunakan untuk check-in');
+
+            $this->postJson('/api/checkin', $this->payload($seed['ticket']->uuid, $seed['tanggalId']))
+                ->assertStatus(409)
+                ->assertJsonPath('message', 'Status registrasi tidak dapat digunakan untuk check-in');
+
+            $this->postJson('/api/checkin/onsite', [
+                'ticket_uuid' => $seed['ticket']->uuid,
+                'id_tanggal' => $seed['tanggalId'],
+                'amount' => 100_000,
+            ])->assertStatus(409)
+                ->assertJsonPath('message', 'Status registrasi tidak dapat digunakan untuk check-in');
+        }
+
+        $this->assertSame(0, DB::table('payments')->count());
+        $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
+        $this->assertSame('issued', DB::table('tickets')->where('id', $seed['ticket']->id)->value('status'));
+    }
+
+    public function test_inactive_event_is_rejected_by_lookup_check_in_and_onsite(): void
+    {
+        $seed = $this->seedDomain('issued', 'pending', 'pay_at_venue');
+        DB::table('events')->where('id', 1)->update(['is_active' => '0']);
+        $operator = $this->makeUser('event');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload($seed['ticket']->uuid, $seed['tanggalId']))
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'Event tidak aktif');
+
+        $this->postJson('/api/checkin', $this->payload($seed['ticket']->uuid, $seed['tanggalId']))
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'Event tidak aktif');
+
+        $this->postJson('/api/checkin/onsite', [
+            'ticket_uuid' => $seed['ticket']->uuid,
+            'id_tanggal' => $seed['tanggalId'],
+            'amount' => 100_000,
+        ])->assertStatus(409)
+            ->assertJsonPath('message', 'Event tidak aktif');
+
+        $this->assertSame(0, DB::table('payments')->count());
+        $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
+    }
+
+    public function test_checked_in_order_remains_eligible_for_duplicate_ticket_handling(): void
+    {
+        $seed = $this->seedDomain('checked_in');
+        $seed['order']->update(['status_registrasi' => 'checked_in']);
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload($seed['participant']->id_anggota, $seed['tanggalId'], [
+            'identifier_type' => 'member_card',
+        ]))->assertStatus(200)
+            ->assertJsonPath('data.ticket.status', 'checked_in');
+
+        $this->postJson('/api/checkin', $this->payload($seed['ticket']->uuid, $seed['tanggalId']))
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'Tiket sudah digunakan');
+    }
+
     public function test_unpaid_pay_now_ticket_cannot_check_in(): void
     {
         $seed = $this->seedDomain('issued', 'pending', 'pay_now');
@@ -463,6 +794,52 @@ class CheckInTest extends TestCase
             ->assertJsonPath('message', 'Pembayaran belum lunas');
 
         $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
+    }
+
+    public function test_terminal_unpaid_pay_now_orders_cannot_check_in(): void
+    {
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        foreach (['expired', 'cancelled', 'failed'] as $status) {
+            $seed = $this->seedDomain('issued', $status, 'pay_now');
+
+            $this->postJson('/api/checkin', $this->payload($seed['ticket']->uuid, $seed['tanggalId']))
+                ->assertStatus(409)
+                ->assertJsonPath('message', 'Pembayaran belum lunas');
+
+            $this->assertSame($status, $seed['order']->fresh()->payment_status);
+            $this->assertSame('issued', $seed['ticket']->fresh()->status);
+        }
+
+        $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
+    }
+
+    public function test_member_card_lookup_preserves_pay_at_venue_flow(): void
+    {
+        $seed = $this->seedDomain('issued', 'pending', 'pay_at_venue');
+        $operator = $this->makeUser('event');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload($seed['participant']->id_anggota, $seed['tanggalId'], [
+            'identifier_type' => 'member_card',
+        ]))->assertStatus(200)
+            ->assertJsonPath('data.ticket.uuid', $seed['ticket']->uuid)
+            ->assertJsonPath('data.payment.choice', 'pay_at_venue')
+            ->assertJsonPath('data.payment.status', 'pending')
+            ->assertJsonPath('data.payment.amount', 100000);
+
+        $this->assertSame(0, DB::table('payments')->count());
+        $this->assertSame(0, DB::table('prisensi_kehadiran')->count());
+
+        $this->postJson('/api/checkin/onsite', [
+            'ticket_uuid' => $seed['ticket']->uuid,
+            'id_tanggal' => $seed['tanggalId'],
+            'gate' => 'Gate B',
+            'amount' => 100_000,
+        ])->assertStatus(200)
+            ->assertJsonPath('data.payment.status', 'paid')
+            ->assertJsonPath('data.attendance.status', 'present');
     }
 
     public function test_onsite_amount_must_match_server_outstanding_and_rolls_back(): void

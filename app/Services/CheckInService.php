@@ -2,9 +2,12 @@
 
 namespace App\Services;
 
+use App\Enums\OrderStatus;
 use App\Enums\PaymentStatus;
 use App\Enums\TicketStatus;
 use App\Events\TicketStatusChanged;
+use App\Models\DataUser;
+use App\Models\Event;
 use App\Models\Order;
 use App\Models\Prisensi_kehadiran;
 use App\Models\Tanggal_event;
@@ -17,27 +20,39 @@ class CheckInService
 {
     public function __construct(
         protected PaymentService $payments,
-    ) {
-    }
+    ) {}
 
-    public function lookup(User $actor, string $identifier, int $idEvent, int $idTanggal): array
-    {
-        $ticket = Ticket::query()
-            ->where('uuid', $identifier)
-            ->orWhere('nomor_ticket', $identifier)
-            ->orWhere('qr_payload', $identifier)
-            ->first();
-
-        if (!$ticket) {
-            return ['ok' => false, 'message' => 'Tiket tidak ditemukan', 'code' => 404];
+    public function lookup(
+        User $actor,
+        string $identifier,
+        int $idEvent,
+        int $idTanggal,
+        string $identifierType = 'ticket'
+    ): array {
+        if (! $this->canCheckIn($actor)) {
+            return ['ok' => false, 'message' => 'Forbidden', 'code' => 403];
         }
 
-        $validation = $this->validate($actor, $ticket, $idTanggal, $idEvent);
-        if (!$validation['ok']) {
+        $eventValidation = $this->validateEvent($idEvent);
+        if (! $eventValidation['ok']) {
+            return $eventValidation;
+        }
+
+        $resolved = $identifierType === 'member_card'
+            ? $this->resolveMemberCard($identifier, $idEvent)
+            : $this->resolveTicket($identifier);
+
+        if (! $resolved['ok']) {
+            return $resolved;
+        }
+
+        $ticket = $resolved['ticket'];
+        $validation = $this->validate($actor, $ticket, $idTanggal, $idEvent, false);
+        if (! $validation['ok']) {
             return $validation;
         }
 
-        if (!in_array($ticket->status, [TicketStatus::ISSUED->value, TicketStatus::CHECKED_IN->value], true)) {
+        if (! in_array($ticket->status, [TicketStatus::ISSUED->value, TicketStatus::CHECKED_IN->value], true)) {
             return ['ok' => false, 'message' => 'Tiket tidak dapat digunakan pada status saat ini', 'code' => 409];
         }
 
@@ -51,24 +66,33 @@ class CheckInService
 
     public function checkIn(User $actor, string $ticketUuid, int $idTanggal, ?string $gate): array
     {
+        if (! $this->canCheckIn($actor)) {
+            return ['ok' => false, 'message' => 'Forbidden', 'code' => 403];
+        }
+
         $ticket = Ticket::where('uuid', $ticketUuid)->first();
-        if (!$ticket) {
+        if (! $ticket) {
             return ['ok' => false, 'message' => 'Tiket tidak ditemukan', 'code' => 404];
         }
 
-        $validation = $this->validate($actor, $ticket, $idTanggal);
-        if (!$validation['ok']) {
+        $validation = $this->validate($actor, $ticket, $idTanggal, null, false);
+        if (! $validation['ok']) {
             return $validation;
         }
 
         $result = DB::transaction(function () use ($actor, $ticket, $idTanggal, $gate) {
             $order = Order::whereKey($ticket->id_order)->lockForUpdate()->first();
-            if (!$order) {
+            if (! $order) {
                 return ['ok' => false, 'message' => 'Data pesanan tidak ditemukan', 'code' => 422];
             }
 
+            $orderValidation = $this->validateOrder($order);
+            if (! $orderValidation['ok']) {
+                return $orderValidation;
+            }
+
             $lockedTicket = Ticket::whereKey($ticket->id)->lockForUpdate()->first();
-            if (!$lockedTicket) {
+            if (! $lockedTicket) {
                 return ['ok' => false, 'message' => 'Tiket tidak ditemukan', 'code' => 404];
             }
 
@@ -81,7 +105,7 @@ class CheckInService
             }
 
             $outstanding = $this->payments->outstanding($order);
-            if (!$this->isPaid($order, $outstanding)) {
+            if (! $this->isPaid($order, $outstanding)) {
                 return ['ok' => false, 'message' => 'Pembayaran belum lunas', 'code' => 409];
             }
 
@@ -90,7 +114,7 @@ class CheckInService
             return ['ok' => true, 'attendance' => $attendance, 'ticket' => $lockedTicket, 'order' => $order];
         });
 
-        if (!$result['ok']) {
+        if (! $result['ok']) {
             return $result;
         }
 
@@ -108,24 +132,33 @@ class CheckInService
 
     public function admitOnsite(User $actor, string $ticketUuid, int $idTanggal, ?string $gate, float $confirmedAmount): array
     {
+        if (! $this->canCheckIn($actor)) {
+            return ['ok' => false, 'message' => 'Forbidden', 'code' => 403];
+        }
+
         $ticket = Ticket::where('uuid', $ticketUuid)->first();
-        if (!$ticket) {
+        if (! $ticket) {
             return ['ok' => false, 'message' => 'Tiket tidak ditemukan', 'code' => 404];
         }
 
-        $validation = $this->validate($actor, $ticket, $idTanggal);
-        if (!$validation['ok']) {
+        $validation = $this->validate($actor, $ticket, $idTanggal, null, false);
+        if (! $validation['ok']) {
             return $validation;
         }
 
         return DB::transaction(function () use ($actor, $ticket, $idTanggal, $gate, $confirmedAmount) {
             $order = Order::whereKey($ticket->id_order)->lockForUpdate()->first();
-            if (!$order) {
+            if (! $order) {
                 return ['ok' => false, 'message' => 'Data pesanan tidak ditemukan', 'code' => 422];
             }
 
+            $orderValidation = $this->validateOrder($order);
+            if (! $orderValidation['ok']) {
+                return $orderValidation;
+            }
+
             $lockedTicket = Ticket::whereKey($ticket->id)->lockForUpdate()->first();
-            if (!$lockedTicket) {
+            if (! $lockedTicket) {
                 return ['ok' => false, 'message' => 'Tiket tidak ditemukan', 'code' => 404];
             }
 
@@ -158,7 +191,7 @@ class CheckInService
                 'note' => 'on_site',
             ]);
 
-            if (!$payment['ok']) {
+            if (! $payment['ok']) {
                 return $payment;
             }
 
@@ -183,9 +216,14 @@ class CheckInService
         };
     }
 
-    protected function validate(User $actor, Ticket $ticket, int $idTanggal, ?int $idEvent = null): array
-    {
-        if (!Gate::forUser($actor)->allows('checkIn', $ticket)) {
+    protected function validate(
+        User $actor,
+        Ticket $ticket,
+        int $idTanggal,
+        ?int $idEvent = null,
+        bool $authorize = true
+    ): array {
+        if ($authorize && ! $this->canCheckIn($actor)) {
             return ['ok' => false, 'message' => 'Forbidden', 'code' => 403];
         }
 
@@ -194,7 +232,7 @@ class CheckInService
         }
 
         $order = $ticket->order;
-        if (!$order) {
+        if (! $order) {
             return ['ok' => false, 'message' => 'Data pesanan tidak ditemukan', 'code' => 422];
         }
 
@@ -202,14 +240,126 @@ class CheckInService
             return ['ok' => false, 'message' => 'Tiket tidak berlaku untuk event ini', 'code' => 422];
         }
 
+        $eventValidation = $this->validateEvent($idEvent ?? (int) $order->id_event);
+        if (! $eventValidation['ok']) {
+            return $eventValidation;
+        }
+
+        $orderValidation = $this->validateOrder($order);
+        if (! $orderValidation['ok']) {
+            return $orderValidation;
+        }
+
         $day = Tanggal_event::where('id', $idTanggal)
             ->where('id_event', $order->id_event)
             ->first();
-        if (!$day) {
+        if (! $day) {
             return ['ok' => false, 'message' => 'Tanggal kegiatan tidak valid untuk tiket ini', 'code' => 422];
         }
 
         return ['ok' => true, 'order' => $order, 'day' => $day];
+    }
+
+    protected function canCheckIn(User $actor): bool
+    {
+        return Gate::forUser($actor)->allows('checkIn', new Ticket);
+    }
+
+    protected function validateEvent(int $idEvent): array
+    {
+        $event = Event::find($idEvent);
+        if (! $event) {
+            return ['ok' => false, 'message' => 'Event tidak ditemukan', 'code' => 422];
+        }
+
+        if ((string) $event->is_active !== '1') {
+            return ['ok' => false, 'message' => 'Event tidak aktif', 'code' => 409];
+        }
+
+        return ['ok' => true, 'event' => $event];
+    }
+
+    protected function validateOrder(Order $order): array
+    {
+        if (! in_array($order->status_registrasi, [
+            OrderStatus::REGISTERED->value,
+            OrderStatus::CONFIRMED->value,
+            OrderStatus::CHECKED_IN->value,
+        ], true)) {
+            return ['ok' => false, 'message' => 'Status registrasi tidak dapat digunakan untuk check-in', 'code' => 409];
+        }
+
+        return ['ok' => true];
+    }
+
+    protected function resolveTicket(string $identifier): array
+    {
+        $tickets = Ticket::query()
+            ->where('uuid', $identifier)
+            ->orWhere('nomor_ticket', $identifier)
+            ->orWhere('qr_payload', $identifier)
+            ->limit(2)
+            ->get();
+
+        if ($tickets->isEmpty()) {
+            return ['ok' => false, 'message' => 'Tiket tidak ditemukan', 'code' => 404];
+        }
+
+        if ($tickets->count() !== 1) {
+            return ['ok' => false, 'message' => 'Identifier tiket tidak unik', 'code' => 409];
+        }
+
+        return ['ok' => true, 'ticket' => $tickets->first()];
+    }
+
+    protected function resolveMemberCard(string $identifier, int $idEvent): array
+    {
+        $members = User::where('id_anggota', $identifier)
+            ->get()
+            ->filter(fn (User $user) => (string) $user->id_anggota === $identifier)
+            ->values();
+
+        if ($members->isEmpty()) {
+            return ['ok' => false, 'message' => 'Anggota tidak ditemukan', 'code' => 404];
+        }
+
+        if ($members->count() !== 1) {
+            return ['ok' => false, 'message' => 'Kartu anggota tidak unik', 'code' => 409];
+        }
+
+        $orders = Order::where('id_event', $idEvent)
+            ->where('id_anggota', $members->first()->id_anggota)
+            ->limit(2)
+            ->get();
+
+        if ($orders->isEmpty()) {
+            return ['ok' => false, 'message' => 'Anggota belum terdaftar pada event ini', 'code' => 404];
+        }
+
+        if ($orders->count() !== 1) {
+            return ['ok' => false, 'message' => 'Registrasi anggota tidak unik', 'code' => 409];
+        }
+
+        $order = $orders->first();
+        $orderValidation = $this->validateOrder($order);
+        if (! $orderValidation['ok']) {
+            return $orderValidation;
+        }
+
+        $tickets = $order->tickets()
+            ->whereIn('status', [TicketStatus::ISSUED->value, TicketStatus::CHECKED_IN->value])
+            ->limit(2)
+            ->get();
+
+        if ($tickets->isEmpty()) {
+            return ['ok' => false, 'message' => 'Tiket aktif tidak ditemukan untuk registrasi ini', 'code' => 404];
+        }
+
+        if ($tickets->count() !== 1) {
+            return ['ok' => false, 'message' => 'Tiket aktif untuk registrasi ini tidak unik', 'code' => 409];
+        }
+
+        return ['ok' => true, 'ticket' => $tickets->first()];
     }
 
     protected function recordAttendance(User $actor, Ticket $ticket, Order $order, int $idTanggal, ?string $gate): Prisensi_kehadiran
@@ -276,6 +426,7 @@ class CheckInService
     protected function scannerPayload(Ticket $ticket, Order $order): array
     {
         $participant = User::where('id_anggota', $order->id_anggota)->first();
+        $profile = $participant ? DataUser::where('id_users', $participant->id)->first() : null;
         $attendance = Prisensi_kehadiran::where('id_ticket', $ticket->id)->orderBy('id')->first();
         $paidPayment = $order->payments()
             ->where('status', PaymentStatus::PAID->value)
@@ -298,6 +449,8 @@ class CheckInService
                 'id' => $participant?->id,
                 'id_anggota' => $order->id_anggota,
                 'name' => $participant?->name ?? 'Peserta',
+                'foto' => $profile?->foto,
+                'niqobah' => $profile?->niqobah,
             ],
             'event' => [
                 'id_event' => $order->id_event,

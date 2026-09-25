@@ -14,6 +14,9 @@ enum PaymentStatus: string
     case PAID = 'paid';
     case REJECTED = 'rejected';
     case REFUND = 'refund';
+    case EXPIRED = 'expired';
+    case CANCELLED = 'cancelled';
+    case FAILED = 'failed';
 
     /**
      * All values as a list (useful for validation rules).

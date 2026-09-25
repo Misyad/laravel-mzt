@@ -16,22 +16,28 @@ class CheckInController extends Controller
 {
     public function __construct(
         protected CheckInService $checkIn,
-    ) {
-    }
+    ) {}
 
     public function lookup(Request $request)
     {
         $validated = $request->validate([
             'identifier' => ['required', 'string', 'max:255'],
+            'identifier_type' => ['sometimes', 'string', 'in:ticket,member_card'],
             'id_event' => ['required', 'integer'],
             'id_tanggal' => ['required', 'integer'],
         ]);
 
+        $identifierType = $validated['identifier_type'] ?? 'ticket';
+        $identifier = $identifierType === 'member_card'
+            ? $validated['identifier']
+            : trim($validated['identifier']);
+
         return $this->respond($this->checkIn->lookup(
             $request->user(),
-            trim($validated['identifier']),
+            $identifier,
             (int) $validated['id_event'],
             (int) $validated['id_tanggal'],
+            $identifierType,
         ));
     }
 
@@ -62,7 +68,7 @@ class CheckInController extends Controller
             $request->gate,
         );
 
-        if (!$result['ok']) {
+        if (! $result['ok']) {
             return response()->json([
                 'success' => false,
                 'message' => $result['message'],

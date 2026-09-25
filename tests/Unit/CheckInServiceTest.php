@@ -5,6 +5,7 @@ namespace Tests\Unit;
 use App\Enums\TicketStatus;
 use App\Models\Ticket;
 use App\Services\CheckInService;
+use App\Services\PaymentService;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -18,7 +19,7 @@ class CheckInServiceTest extends TestCase
 {
     public function testOnlyIssuedTicketsMayBeCheckedIn(): void
     {
-        $service = new CheckInService();
+        $service = new CheckInService($this->createMock(PaymentService::class));
 
         $this->assertSame('ok', $service->verdict(new Ticket(['status' => TicketStatus::ISSUED->value])));
         $this->assertSame('duplicate', $service->verdict(new Ticket(['status' => TicketStatus::CHECKED_IN->value])));

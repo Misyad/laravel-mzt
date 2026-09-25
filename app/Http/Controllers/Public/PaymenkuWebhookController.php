@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Public;
 
 use App\Http\Controllers\Controller;
+use App\Services\EventPaymentService;
 use App\Services\KtaPrintRequestService;
 use App\Services\PaymenkuService;
 use Illuminate\Http\Request;
@@ -27,8 +28,8 @@ class PaymenkuWebhookController extends Controller
     public function __construct(
         protected PaymenkuService $paymenku,
         protected KtaPrintRequestService $requests,
-    ) {
-    }
+        protected EventPaymentService $eventPayments,
+    ) {}
 
     public function handle(Request $request)
     {
@@ -40,6 +41,7 @@ class PaymenkuWebhookController extends Controller
         if (! $this->paymenku->verifyWebhookSignature($raw, $signature, $timestamp)) {
             // Never log the body (may contain customer data).
             Log::warning('paymenku.webhook.invalid_signature');
+
             return response()->json(['error' => 'Invalid signature'], 401);
         }
 
@@ -49,8 +51,15 @@ class PaymenkuWebhookController extends Controller
         }
 
         $hash = hash('sha256', $raw);
+        $reference = isset($payload['reference_id']) ? (string) $payload['reference_id'] : '';
 
-        $result = $this->requests->applyPaymentEvent($hash, $payload);
+        if (str_starts_with($reference, 'EVENT-')) {
+            $result = $this->eventPayments->applyPaymentEvent($hash, $payload);
+        } elseif (str_starts_with($reference, 'KTA-')) {
+            $result = $this->requests->applyPaymentEvent($hash, $payload);
+        } else {
+            return response()->json(['received' => true], 200);
+        }
 
         if (! $result['ok']) {
             return response()->json(['success' => false, 'message' => $result['message']], $result['code']);

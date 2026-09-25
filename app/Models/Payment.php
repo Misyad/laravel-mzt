@@ -15,6 +15,10 @@ class Payment extends Model
 
     protected $casts = [
         'amount' => 'decimal:2',
+        'base_amount' => 'decimal:2',
+        'gateway_fee' => 'decimal:2',
+        'gateway_total' => 'decimal:2',
+        'expires_at' => 'datetime',
         'paid_at' => 'datetime',
         'verified_at' => 'datetime',
     ];
@@ -32,5 +36,10 @@ class Payment extends Model
     public function logs()
     {
         return $this->hasMany(PaymentLog::class, 'id_payment');
+    }
+
+    public function gatewayEvents()
+    {
+        return $this->hasMany(EventPaymentEvent::class, 'payment_id');
     }
 }

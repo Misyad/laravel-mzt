@@ -7,6 +7,7 @@ use App\Http\Controllers\admin\C_transaksi;
 use App\Http\Controllers\CheckInController;
 use App\Http\Controllers\CommunicationController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\EventPaymentController;
 use App\Http\Controllers\OperationalController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\TicketController;
@@ -142,6 +143,8 @@ Route::middleware(['auth:sanctum', 'check-active'])->group(function () {
     Route::post('/events/{id}/register', [ApiController::class, 'registerEvent']);
     Route::get('/my-orders', [ApiController::class, 'myOrders']);
     Route::get('/orders/{uuid}', [ApiController::class, 'orderShow']);
+    Route::post('/orders/{uuid}/checkout', [EventPaymentController::class, 'checkout'])
+        ->middleware('throttle:10,1');
 
     // Phase 2B — Payment Engine (Sprint 2)
     Route::post('/orders/{uuid}/payment', [PaymentController::class, 'upload'])

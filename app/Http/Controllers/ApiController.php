@@ -1192,10 +1192,14 @@ class ApiController extends Controller
             return response()->json(['success' => false, 'message' => $result['message']], $result['code']);
         }
 
+        $data = $this->eventOrderPayload($result['order']->load('payments'));
+        $data['payment'] = $result['payment'] ?? null;
+        $data['checkout_error'] = $result['checkout_error'] ?? null;
+
         return response()->json([
             'success' => true,
             'message' => $result['message'],
-            'data' => $result['order'],
+            'data' => $data,
         ], $result['code']);
     }
 

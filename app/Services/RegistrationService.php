@@ -27,8 +27,8 @@ class RegistrationService
         protected EventCapacityService $capacity,
         protected OrderNumberService $orderNumber,
         protected TicketService $tickets,
-    ) {
-    }
+        protected EventPaymentService $eventPayments,
+    ) {}
 
     /**
      * Register the given user for the given event.
@@ -37,7 +37,7 @@ class RegistrationService
      */
     public function register(User $user, int $eventId, string $paymentChoice = 'pay_now'): array
     {
-        if (!in_array($paymentChoice, ['pay_now', 'pay_at_venue'], true)) {
+        if (! in_array($paymentChoice, ['pay_now', 'pay_at_venue'], true)) {
             return ['ok' => false, 'message' => 'Pilihan pembayaran tidak valid', 'code' => 422];
         }
 
@@ -45,25 +45,25 @@ class RegistrationService
         // outside the critical section for fast-fail. Capacity is re-checked
         // inside the lock so concurrent requests cannot both pass.
         $event = Event::find($eventId);
-        if (!$event) {
+        if (! $event) {
             return ['ok' => false, 'message' => 'Event tidak ditemukan', 'code' => 404];
         }
 
         $quick = $this->capacity->assertRegistrable($event);
-        if (!$quick['ok'] && !str_contains($quick['message'] ?? '', 'Kuota')) {
+        if (! $quick['ok'] && ! str_contains($quick['message'] ?? '', 'Kuota')) {
             return $quick;
         }
 
         try {
-            return DB::transaction(function () use ($user, $eventId, $paymentChoice) {
+            $result = DB::transaction(function () use ($user, $eventId, $paymentChoice) {
                 // Critical section: serialize on the event row.
                 $event = Event::where('id', $eventId)->lockForUpdate()->first();
-                if (!$event) {
+                if (! $event) {
                     return ['ok' => false, 'message' => 'Event tidak ditemukan', 'code' => 404];
                 }
 
                 $check = $this->capacity->assertRegistrable($event);
-                if (!$check['ok']) {
+                if (! $check['ok']) {
                     return $check;
                 }
 
@@ -98,6 +98,7 @@ class RegistrationService
 
                 return ['ok' => true, 'order' => $order, 'ticket' => $ticket, 'message' => 'Registrasi berhasil', 'code' => 201];
             });
+
         } catch (\Illuminate\Database\QueryException $e) {
             // Unique (id_event, id_anggota) violated by a concurrent winner.
             if (str_contains($e->getMessage(), 'Duplicate entry') || ($e->errorInfo[1] ?? null) === 1062) {
@@ -105,5 +106,18 @@ class RegistrationService
             }
             throw $e;
         }
+
+        if (! $result['ok'] || $paymentChoice !== 'pay_now' || (float) $result['order']->total_amount <= 0.001) {
+            return $result;
+        }
+
+        $checkout = $this->eventPayments->checkout($user, $result['order']);
+        if ($checkout['ok']) {
+            $result['payment'] = $checkout['payment'];
+        } else {
+            $result['checkout_error'] = $checkout['message'];
+        }
+
+        return $result;
     }
 }
