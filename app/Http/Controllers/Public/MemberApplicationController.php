@@ -25,7 +25,11 @@ class MemberApplicationController extends Controller
     public function store(Request $request)
     {
         if (! config('member_onboarding.applications_enabled')) {
-            return response()->json(['success' => false, 'message' => 'Layanan tidak tersedia.'], 503);
+            return response()->json([
+                'success' => false,
+                'code' => 'MEMBER_APPLICATIONS_DISABLED',
+                'message' => 'Layanan tidak tersedia.',
+            ], 503);
         }
 
         $this->requireStatefulSession($request);

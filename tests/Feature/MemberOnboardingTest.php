@@ -75,6 +75,23 @@ class MemberOnboardingTest extends TestCase
         $this->cookieJar = [];
     }
 
+    public function test_disabled_member_applications_return_a_stable_error_code(): void
+    {
+        config(['member_onboarding.applications_enabled' => false]);
+
+        foreach ([
+            $this->postJson('/api/public/member-applications'),
+            $this->postJson('/api/applicant/login'),
+            $this->getJson('/api/applicant/me'),
+        ] as $response) {
+            $response->assertStatus(503)->assertJson([
+                'success' => false,
+                'code' => 'MEMBER_APPLICATIONS_DISABLED',
+                'message' => 'Layanan tidak tersedia.',
+            ]);
+        }
+    }
+
     public function test_inactive_legacy_member_can_claim_once_and_must_complete_setup(): void
     {
         $member = $this->makeMember('Legacy Member', '1990-01-02', 'Bandung', '2010-07-01', [

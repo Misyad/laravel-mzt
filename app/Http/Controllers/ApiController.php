@@ -37,33 +37,52 @@ use Laravel\Sanctum\TransientToken;
 
 class ApiController extends Controller
 {
+    private const INVALID_LOGIN_MESSAGE = 'Email, nomor anggota, atau password salah.';
+
+    private const DUMMY_PASSWORD_HASH = '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi';
+
     public function __construct(
         private ?CredentialRevocationService $revocation = null,
         private ?MemberIdentityService $identity = null
-    ) {}
+    ) {
+        $this->middleware('throttle:member-login')->only('login');
+    }
 
     /**
      * AUTH ENDPOINTS
      */
     public function login(Request $request)
     {
-        $request->validate([
-            'id_anggota' => 'required',
-            'password' => 'required',
-        ]);
-
-        $user = User::where('id_anggota', $request->id_anggota)->first();
-
-        if (! $user || ! Hash::check($request->password, $user->password)) {
+        if ($request->filled('identifier') && $request->filled('id_anggota')) {
             throw ValidationException::withMessages([
-                'id_anggota' => ['ID Anggota atau password salah.'],
+                'identifier' => ['Gunakan hanya satu identitas login.'],
+                'id_anggota' => ['Gunakan hanya satu identitas login.'],
             ]);
         }
 
-        if ($user->is_active != '1') {
-            throw ValidationException::withMessages([
-                'id_anggota' => ['Akun tidak aktif.'],
-            ]);
+        $validated = $request->validate([
+            'identifier' => ['required_without:id_anggota', 'string', 'max:255'],
+            'id_anggota' => ['required_without:identifier', 'string', 'max:255'],
+            'password' => ['required', 'string'],
+        ]);
+
+        $loginField = array_key_exists('identifier', $validated) ? 'identifier' : 'id_anggota';
+        $identifier = trim((string) $validated[$loginField]);
+        if ($identifier === '') {
+            $this->invalidLogin($loginField);
+        }
+
+        $normalizedEmail = $this->memberIdentity()->normalizeEmail($identifier);
+        $users = User::query()
+            ->where('id_anggota', $identifier)
+            ->orWhereRaw('LOWER(TRIM(email)) = ?', [$normalizedEmail])
+            ->limit(2)
+            ->get();
+        $user = $users->count() === 1 ? $users->first() : null;
+        $passwordMatches = Hash::check($validated['password'], $user?->password ?? self::DUMMY_PASSWORD_HASH);
+
+        if (! $user || ! $passwordMatches || $user->is_active != '1') {
+            $this->invalidLogin($loginField);
         }
 
         $user->forceFill(['last_login' => now()])->save();
@@ -560,6 +579,13 @@ class ApiController extends Controller
     private function ineligible(string $code, string $reason): array
     {
         return ['eligible' => false, 'reason_code' => $code, 'reason' => $reason];
+    }
+
+    private function invalidLogin(string $field): void
+    {
+        throw ValidationException::withMessages([
+            $field => [self::INVALID_LOGIN_MESSAGE],
+        ]);
     }
 
     private function credentialRevocation(): CredentialRevocationService

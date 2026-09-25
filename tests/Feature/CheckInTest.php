@@ -481,6 +481,19 @@ class CheckInTest extends TestCase
             ->assertJsonPath('data.ticket.uuid', $seed['ticket']->uuid);
     }
 
+    public function test_ticket_lookup_failure_is_unchanged_and_has_no_member_code(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload((string) Str::uuid(), $seed['tanggalId'], [
+            'identifier_type' => 'ticket',
+        ]))->assertStatus(404)
+            ->assertJsonPath('message', 'Tiket tidak ditemukan')
+            ->assertJsonMissingPath('code');
+    }
+
     public function test_lookup_rejects_unknown_identifier_type(): void
     {
         $seed = $this->seedDomain('issued');
@@ -516,7 +529,51 @@ class CheckInTest extends TestCase
 
         $this->postJson('/api/checkin/lookup', array_merge($payload, ['identifier' => '1234']))
             ->assertStatus(404)
+            ->assertJsonPath('code', 'MEMBER_NOT_FOUND')
             ->assertJsonPath('message', 'Anggota tidak ditemukan');
+    }
+
+    public function test_member_card_lookup_accepts_legacy_mzt_identifier(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $seed['participant']->update(['id_anggota' => 'MZT-LEGACY-001']);
+        $seed['order']->update(['id_anggota' => 'MZT-LEGACY-001']);
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload('MZT-LEGACY-001', $seed['tanggalId'], [
+            'identifier_type' => 'member_card',
+        ]))->assertStatus(200)
+            ->assertJsonPath('data.participant.id_anggota', 'MZT-LEGACY-001');
+    }
+
+    public function test_member_card_lookup_rejects_invalid_format_with_stable_code(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $operator = $this->makeUser('prisensi');
+        Sanctum::actingAs($operator);
+
+        foreach (['0174 011119', '<script>', (string) Str::uuid()] as $identifier) {
+            $this->postJson('/api/checkin/lookup', $this->lookupPayload($identifier, $seed['tanggalId'], [
+                'identifier_type' => 'member_card',
+            ]))->assertStatus(422)
+                ->assertJsonPath('success', false)
+                ->assertJsonPath('code', 'INVALID_MEMBER_ID_FORMAT')
+                ->assertJsonPath('message', 'Format ID anggota tidak valid');
+        }
+    }
+
+    public function test_member_card_format_error_does_not_override_authorization(): void
+    {
+        $seed = $this->seedDomain('issued');
+        $operator = $this->makeUser('anggota');
+        Sanctum::actingAs($operator);
+
+        $this->postJson('/api/checkin/lookup', $this->lookupPayload('<script>', $seed['tanggalId'], [
+            'identifier_type' => 'member_card',
+        ]))->assertStatus(403)
+            ->assertJsonPath('message', 'Forbidden')
+            ->assertJsonMissingPath('code');
     }
 
     public function test_member_card_lookup_resolves_registration_for_selected_event(): void
@@ -592,6 +649,7 @@ class CheckInTest extends TestCase
         $this->postJson('/api/checkin/lookup', $this->lookupPayload($member->id_anggota, $seed['tanggalId'], [
             'identifier_type' => 'member_card',
         ]))->assertStatus(404)
+            ->assertJsonPath('code', 'MEMBER_NOT_REGISTERED_FOR_EVENT')
             ->assertJsonPath('message', 'Anggota belum terdaftar pada event ini');
     }
 

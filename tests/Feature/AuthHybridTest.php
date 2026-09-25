@@ -263,30 +263,127 @@ class AuthHybridTest extends TestCase
         );
     }
 
-    public function test_stateless_login_invalid_credentials_rejected(): void
+    public function test_identifier_login_accepts_normalized_email(): void
     {
-        $this->makeUser('anggota', '0002000002');
+        $user = $this->makeUser('anggota', '0002000012', [
+            'email' => 'member.login@example.test',
+        ]);
 
         $this->resetAuth();
         $this->postJson('/api/login', [
-            'id_anggota' => '0002000002',
+            'identifier' => '  MEMBER.LOGIN@EXAMPLE.TEST  ',
+            'password' => 'password',
+        ])->assertOk()
+            ->assertJsonPath('user.id', $user->id)
+            ->assertJsonPath('user.id_anggota', '0002000012');
+    }
+
+    public function test_identifier_login_preserves_leading_zero_member_id(): void
+    {
+        $user = $this->makeUser('anggota', '0000000013');
+
+        $this->resetAuth();
+        $this->postJson('/api/login', [
+            'identifier' => '0000000013',
+            'password' => 'password',
+        ])->assertOk()
+            ->assertJsonPath('user.id', $user->id)
+            ->assertJsonPath('user.id_anggota', '0000000013');
+    }
+
+    public function test_legacy_id_anggota_payload_remains_supported(): void
+    {
+        $user = $this->makeUser('anggota', '0002000014');
+
+        $this->resetAuth();
+        $this->postJson('/api/login', [
+            'id_anggota' => '0002000014',
+            'password' => 'password',
+        ])->assertOk()
+            ->assertJsonPath('user.id', $user->id);
+    }
+
+    public function test_invalid_unknown_and_inactive_credentials_share_the_generic_response(): void
+    {
+        $this->makeUser('anggota', '0002000002');
+        $this->makeUser('anggota', '0002000003', ['is_active' => '0']);
+
+        $this->resetAuth();
+        $wrongPassword = $this->postJson('/api/login', [
+            'identifier' => '0002000002',
             'password' => 'wrong-password',
-        ])->assertStatus(422);
+        ]);
+        $this->resetAuth();
+        $unknownUser = $this->postJson('/api/login', [
+            'identifier' => 'unknown-member',
+            'password' => 'wrong-password',
+        ]);
+        $this->resetAuth();
+        $inactiveUser = $this->postJson('/api/login', [
+            'identifier' => '0002000003',
+            'password' => 'password',
+        ]);
+
+        foreach ([$wrongPassword, $unknownUser, $inactiveUser] as $response) {
+            $response->assertStatus(422)
+                ->assertJsonPath('errors.identifier.0', 'Email, nomor anggota, atau password salah.');
+        }
+        $this->assertSame($wrongPassword->json(), $unknownUser->json());
+        $this->assertSame($wrongPassword->json(), $inactiveUser->json());
+        $this->assertSame(0, DB::table('personal_access_tokens')->count());
+    }
+
+    public function test_ambiguous_identifier_is_rejected_with_the_generic_response(): void
+    {
+        $this->makeUser('anggota', 'collision@example.test', [
+            'email' => 'first@example.test',
+        ]);
+        $this->makeUser('anggota', '0002000015', [
+            'email' => 'collision@example.test',
+        ]);
+
+        $this->resetAuth();
+        $this->postJson('/api/login', [
+            'identifier' => 'collision@example.test',
+            'password' => 'password',
+        ])->assertStatus(422)
+            ->assertJsonPath('errors.identifier.0', 'Email, nomor anggota, atau password salah.');
 
         $this->assertSame(0, DB::table('personal_access_tokens')->count());
     }
 
-    public function test_stateless_login_inactive_account_rejected(): void
+    public function test_login_rejects_payloads_with_both_identifier_fields(): void
     {
-        $this->makeUser('anggota', '0002000003', ['is_active' => '0']);
+        $this->makeUser('anggota', '0002000016');
 
         $this->resetAuth();
         $this->postJson('/api/login', [
-            'id_anggota' => '0002000003',
+            'identifier' => '0002000016',
+            'id_anggota' => '0002000016',
             'password' => 'password',
-        ])->assertStatus(422);
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['identifier', 'id_anggota']);
 
         $this->assertSame(0, DB::table('personal_access_tokens')->count());
+    }
+
+    public function test_member_login_is_rate_limited_by_identifier_and_ip(): void
+    {
+        $identifier = 'rate-limit-'.bin2hex(random_bytes(8));
+
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $this->resetAuth();
+            $this->postJson('/api/login', [
+                'identifier' => $identifier,
+                'password' => 'wrong-password',
+            ])->assertStatus(422);
+        }
+
+        $this->resetAuth();
+        $this->postJson('/api/login', [
+            'identifier' => $identifier,
+            'password' => 'wrong-password',
+        ])->assertStatus(429);
     }
 
     public function test_pat_authenticates_user_endpoint_and_is_audited(): void

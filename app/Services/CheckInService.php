@@ -314,13 +314,27 @@ class CheckInService
 
     protected function resolveMemberCard(string $identifier, int $idEvent): array
     {
+        if (! $this->isValidMemberId($identifier)) {
+            return [
+                'ok' => false,
+                'message' => 'Format ID anggota tidak valid',
+                'code' => 422,
+                'error_code' => 'INVALID_MEMBER_ID_FORMAT',
+            ];
+        }
+
         $members = User::where('id_anggota', $identifier)
             ->get()
             ->filter(fn (User $user) => (string) $user->id_anggota === $identifier)
             ->values();
 
         if ($members->isEmpty()) {
-            return ['ok' => false, 'message' => 'Anggota tidak ditemukan', 'code' => 404];
+            return [
+                'ok' => false,
+                'message' => 'Anggota tidak ditemukan',
+                'code' => 404,
+                'error_code' => 'MEMBER_NOT_FOUND',
+            ];
         }
 
         if ($members->count() !== 1) {
@@ -333,7 +347,12 @@ class CheckInService
             ->get();
 
         if ($orders->isEmpty()) {
-            return ['ok' => false, 'message' => 'Anggota belum terdaftar pada event ini', 'code' => 404];
+            return [
+                'ok' => false,
+                'message' => 'Anggota belum terdaftar pada event ini',
+                'code' => 404,
+                'error_code' => 'MEMBER_NOT_REGISTERED_FOR_EVENT',
+            ];
         }
 
         if ($orders->count() !== 1) {
@@ -360,6 +379,16 @@ class CheckInService
         }
 
         return ['ok' => true, 'ticket' => $tickets->first()];
+    }
+
+    protected function isValidMemberId(string $identifier): bool
+    {
+        if ($identifier === '' || strlen($identifier) > 50) {
+            return false;
+        }
+
+        return ctype_digit($identifier)
+            || preg_match('/\AMZT(?:-?[A-Z0-9]+(?:-[A-Z0-9]+)*)\z/', $identifier) === 1;
     }
 
     protected function recordAttendance(User $actor, Ticket $ticket, Order $order, int $idTanggal, ?string $gate): Prisensi_kehadiran

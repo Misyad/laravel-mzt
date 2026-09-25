@@ -85,10 +85,16 @@ class CheckInController extends Controller
 
     protected function respond(array $result)
     {
-        return response()->json([
+        $response = [
             'success' => $result['ok'],
             'message' => $result['message'],
             'data' => $result['data'] ?? null,
-        ], $result['code']);
+        ];
+
+        if (isset($result['error_code'])) {
+            $response['code'] = $result['error_code'];
+        }
+
+        return response()->json($response, $result['code']);
     }
 }
