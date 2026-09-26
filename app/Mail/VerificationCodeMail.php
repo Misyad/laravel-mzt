@@ -14,15 +14,27 @@ class VerificationCodeMail extends Mailable
 
     public string $purpose;
 
-    public function __construct(string $code, string $purpose)
+    public ?string $applicationNumber;
+
+    public function __construct(string $code, string $purpose, ?string $applicationNumber = null)
     {
         $this->code = $code;
         $this->purpose = $purpose;
+        $this->applicationNumber = $applicationNumber;
     }
 
     public function build()
     {
         return $this->subject($this->purpose)
-            ->html('<p>Kode verifikasi Anda:</p><p><strong>'.e($this->code).'</strong></p><p>Kode ini akan segera kedaluwarsa.</p>');
+            ->html($this->htmlContent());
+    }
+
+    public function htmlContent(): string
+    {
+        $applicationNumber = $this->applicationNumber === null
+            ? ''
+            : '<p>Nomor pendaftaran: <strong>'.e($this->applicationNumber).'</strong></p>';
+
+        return $applicationNumber.'<p>Kode verifikasi Anda:</p><p><strong>'.e($this->code).'</strong></p><p>Kode ini akan segera kedaluwarsa.</p>';
     }
 }

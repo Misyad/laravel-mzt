@@ -107,11 +107,16 @@ class PasswordResetController extends Controller
                 throw ValidationException::withMessages(['password' => ['Password baru harus berbeda dari password saat ini.']]);
             }
 
-            $user->forceFill([
+            $attributes = [
                 'password' => Hash::make($validated['password']),
                 'password_changed_at' => now(),
                 'remember_token' => Str::random(60),
-            ])->save();
+            ];
+            if ((bool) $user->account_setup_required && $user->account_claimed_at === null) {
+                $attributes['account_setup_required'] = false;
+                $attributes['account_claimed_at'] = now();
+            }
+            $user->forceFill($attributes)->save();
             $reset->forceFill(['used_at' => now()])->save();
             PasswordResetRequest::query()
                 ->where('user_id', $user->id)

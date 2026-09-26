@@ -2,15 +2,18 @@
 
 namespace App\Services;
 
+use App\Mail\MemberApplicationApprovedMail;
 use App\Models\ApplicantSession;
 use App\Models\DataUser;
 use App\Models\HakAksesRole;
 use App\Models\MemberApplication;
 use App\Models\MemberApplicationLog;
+use App\Models\PasswordResetRequest;
 use App\Models\User;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -24,9 +27,10 @@ class MemberApplicationApprovalService
         $barcodePath = null;
         $photoPath = null;
         $email = MemberApplication::whereKey($application->id)->value('email');
+        $claimToken = Str::random(64);
 
         try {
-            return DB::transaction(function () use ($application, $approver, $email, &$barcodePath, &$photoPath) {
+            return DB::transaction(function () use ($application, $approver, $email, $claimToken, &$barcodePath, &$photoPath) {
                 $this->identity->lockEmail($email);
                 $locked = MemberApplication::whereKey($application->id)->lockForUpdate()->firstOrFail();
                 if (! hash_equals($email, $locked->email)) {
@@ -65,7 +69,7 @@ class MemberApplicationApprovalService
                         'name' => $locked->name,
                         'email' => $locked->email,
                         'email_verified_at' => $locked->email_verified_at,
-                        'password' => Hash::make('mzt12345'),
+                        'password' => Hash::make(Str::random(64)),
                         'is_active' => '1',
                         'password_changed_at' => null,
                         'account_setup_required' => true,
@@ -106,6 +110,18 @@ class MemberApplicationApprovalService
                     ]);
                 }
 
+                PasswordResetRequest::query()
+                    ->where('user_id', $user->id)
+                    ->whereNull('used_at')
+                    ->update(['used_at' => now()]);
+                PasswordResetRequest::create([
+                    'token_hash' => $this->identity->secretHash($claimToken),
+                    'user_id' => $user->id,
+                    'email' => $locked->email,
+                    'expires_at' => now()->addMinutes((int) config('member_onboarding.password_reset.ttl_minutes', 30)),
+                    'created_at' => now(),
+                ]);
+
                 $oldStatus = $locked->status;
                 $locked->forceFill([
                     'status' => MemberApplication::APPROVED,
@@ -126,6 +142,19 @@ class MemberApplicationApprovalService
                     'metadata' => ['approved_user_id' => $user->id, 'id_anggota' => $idAnggota],
                     'created_at' => now(),
                 ]);
+
+                DB::afterCommit(function () use ($locked, $idAnggota, $claimToken) {
+                    try {
+                        Mail::to($locked->email)->send(new MemberApplicationApprovedMail(
+                            $idAnggota,
+                            $locked->application_number,
+                            $claimToken,
+                            $locked->email
+                        ));
+                    } catch (\Throwable $exception) {
+                        report($exception);
+                    }
+                });
 
                 return [$locked, $user];
             });

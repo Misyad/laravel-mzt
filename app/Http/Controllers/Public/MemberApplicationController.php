@@ -125,7 +125,7 @@ class MemberApplicationController extends Controller
         }
 
         if ($created) {
-            $this->sendVerificationMail($email, $code);
+            $this->sendVerificationMail($email, $code, $application->application_number);
         }
 
         return response()->json([
@@ -149,7 +149,7 @@ class MemberApplicationController extends Controller
             $this->issueCode($application, $code);
             $this->log($application, 'verification_code_resent', $application->status, $application->status, 'applicant');
         });
-        $this->sendVerificationMail($application->email, $code);
+        $this->sendVerificationMail($application->email, $code, $application->application_number);
 
         return response()->json(['success' => true, 'data' => ['application' => $this->payload($application->fresh())]]);
     }
@@ -311,7 +311,7 @@ class MemberApplicationController extends Controller
             Storage::disk('public')->delete($oldFoto);
         }
         if ($emailChanged) {
-            $this->sendVerificationMail($newEmail, $code);
+            $this->sendVerificationMail($newEmail, $code, $updated->application_number);
         }
 
         return response()->json(['success' => true, 'data' => ['application' => $this->payload($updated)]]);
@@ -432,10 +432,14 @@ class MemberApplicationController extends Controller
         return str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
     }
 
-    private function sendVerificationMail(string $email, string $code): void
+    private function sendVerificationMail(string $email, string $code, string $applicationNumber): void
     {
         try {
-            Mail::to($email)->send(new VerificationCodeMail($code, 'Verifikasi email pendaftaran anggota MZT'));
+            Mail::to($email)->send(new VerificationCodeMail(
+                $code,
+                'Verifikasi email pendaftaran anggota MZT',
+                $applicationNumber
+            ));
         } catch (\Throwable $exception) {
             report($exception);
         }

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Mail\MemberApplicationApprovedMail;
 use App\Mail\PasswordResetTokenMail;
 use App\Mail\VerificationCodeMail;
 use App\Models\ApplicantSession;
@@ -170,6 +171,8 @@ class MemberOnboardingTest extends TestCase
         $code = null;
         Mail::assertSent(VerificationCodeMail::class, function (VerificationCodeMail $mail) use (&$code) {
             $code = $mail->code;
+            $this->assertNull($mail->applicationNumber);
+            $this->assertStringContainsString($mail->code, $mail->htmlContent());
 
             return true;
         });
@@ -307,6 +310,10 @@ class MemberOnboardingTest extends TestCase
         $this->captureCookies($create);
         $application = MemberApplication::firstOrFail();
         $this->assertSame('APP-'.strtoupper(str_replace('-', '', $application->uuid)), $application->application_number);
+        $verificationMail = Mail::sent(VerificationCodeMail::class)->last();
+        $this->assertSame($application->application_number, $verificationMail->applicationNumber);
+        $this->assertStringContainsString($application->application_number, $verificationMail->htmlContent());
+        $this->assertStringContainsString($verificationMail->code, $verificationMail->htmlContent());
         $this->assertSame(0, User::count());
 
         $retryPayload = $this->applicationPayload('applicant@example.com');
@@ -375,7 +382,7 @@ class MemberOnboardingTest extends TestCase
         $firstId = $approve->json('data.id_anggota');
         $this->assertMatchesRegularExpression('/^'.now()->format('Y').'\d{6}$/', $firstId);
         $approved = User::where('id_anggota', $firstId)->firstOrFail();
-        $this->assertTrue(Hash::check('mzt12345', $approved->password));
+        $this->assertFalse(Hash::check('mzt12345', $approved->password));
         $this->assertNull($approved->password_changed_at);
         $this->assertTrue($approved->account_setup_required);
         $this->assertNull($approved->account_claimed_at);
@@ -383,6 +390,21 @@ class MemberOnboardingTest extends TestCase
         $this->assertSame(1, DB::table('data_users')->where('id_users', $approved->id)->count());
         $this->assertNotNull($approved->email_verified_at);
         $this->assertDatabaseMissing('applicant_sessions', ['member_application_id' => $application->id]);
+        $approvalMail = Mail::sent(MemberApplicationApprovedMail::class)->last();
+        $this->assertSame($firstId, $approvalMail->memberId);
+        $this->assertSame($application->application_number, $approvalMail->applicationNumber);
+        $this->assertSame('changed@example.com', $approvalMail->email);
+        $this->assertSame(
+            'https://members.example.test/reset-password?'.http_build_query([
+                'token' => $approvalMail->token,
+                'email' => 'changed@example.com',
+            ]),
+            $approvalMail->claimUrl()
+        );
+        $this->assertStringContainsString($firstId, $approvalMail->htmlContent());
+        $this->assertStringContainsString($application->application_number, $approvalMail->htmlContent());
+        $this->assertStringContainsString($approvalMail->claimUrl(), html_entity_decode($approvalMail->htmlContent()));
+        $this->assertSame(1, DB::table('password_reset_requests')->where('user_id', $approved->id)->whereNull('used_at')->count());
 
         $approvedLogin = $this->browser()->postJson('/api/applicant/login', [
             'email' => 'changed@example.com',
@@ -393,25 +415,29 @@ class MemberOnboardingTest extends TestCase
         $this->captureCookies($approvedLogin);
 
         app('auth')->forgetGuards();
-        $memberLogin = $this->postJson('/api/login', [
+        $this->postJson('/api/login', [
             'id_anggota' => $firstId,
             'password' => 'mzt12345',
-        ])->assertSuccessful()
-            ->assertJsonPath('user.account_setup_required', true);
-        app('auth')->forgetGuards();
-        $this->withToken($memberLogin->json('token'))->getJson('/api/profile')
-            ->assertStatus(428)
-            ->assertJsonPath('code', 'ACCOUNT_SETUP_REQUIRED');
+        ])->assertStatus(422);
 
-        $this->postJson('/api/public/password/forgot', ['email' => 'changed@example.com'])->assertSuccessful();
-        $resetToken = Mail::sent(PasswordResetTokenMail::class)->last()->token;
         $this->postJson('/api/public/password/reset', [
-            'token' => $resetToken,
+            'token' => $approvalMail->token,
             'email' => 'changed@example.com',
             'password' => 'NewApprovedPassword2!',
             'password_confirmation' => 'NewApprovedPassword2!',
         ])->assertSuccessful();
+        $approved->refresh();
+        $this->assertTrue(Hash::check('NewApprovedPassword2!', $approved->password));
+        $this->assertFalse($approved->account_setup_required);
+        $this->assertNotNull($approved->account_claimed_at);
+        $this->assertNotNull($approved->password_changed_at);
         $this->assertDatabaseMissing('applicant_sessions', ['member_application_id' => $application->id]);
+        app('auth')->forgetGuards();
+        $this->postJson('/api/login', [
+            'id_anggota' => $firstId,
+            'password' => 'NewApprovedPassword2!',
+        ])->assertSuccessful()
+            ->assertJsonPath('user.account_setup_required', false);
         $this->browser()->getJson('/api/applicant/me')->assertStatus(401);
         $this->browser()->postJson('/api/applicant/login', [
             'email' => 'changed@example.com',
